@@ -5,6 +5,7 @@ import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
+  RawCodexEvent,
   RunUsage,
   RunnerRequest,
   RunnerResult,
@@ -17,6 +18,7 @@ export interface ParsedEvents {
   threadId: string | null;
   usage: RunUsage | null;
   errors: string[];
+  rawEvents: RawCodexEvent[];
 }
 
 export function buildCodexArgs(
@@ -48,6 +50,8 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
   } catch {
     return;
   }
+
+  parsed.rawEvents.push({ observedAt: new Date().toISOString(), event });
 
   if (event.type === "thread.started" && typeof event.thread_id === "string") {
     parsed.threadId = event.thread_id;
@@ -154,6 +158,7 @@ export class CodexRunner implements AgentRunner {
       threadId: request.threadId,
       usage: null,
       errors: [],
+      rawEvents: [],
     };
     let stdout = "";
     let stderr = "";
@@ -219,6 +224,7 @@ export class CodexRunner implements AgentRunner {
         output,
         threadId: parsed.threadId,
         usage: parsed.usage,
+        events: parsed.rawEvents,
       };
     } finally {
       clearTimeout(timeout);

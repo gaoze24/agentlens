@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import type { RawCodexEvent } from "./types.js";
 
 describe("Codex runner protocol", () => {
   it("builds a new-session invocation", () => {
@@ -47,6 +48,7 @@ describe("Codex runner protocol", () => {
         outputTokens?: number;
       } | null,
       errors: [] as string[],
+      rawEvents: [] as RawCodexEvent[],
     };
     parseCodexEventLine(
       JSON.stringify({ type: "thread.started", thread_id: "thread-123" }),
@@ -69,5 +71,6 @@ describe("Codex runner protocol", () => {
     expect(parsed.threadId).toBe("thread-123");
     expect(parsed.messages).toEqual(["Done."]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
+    expect(parsed.rawEvents).toHaveLength(3);
   });
 });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentRun, Message, SystemInfo, TraceSpan } from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -35,6 +35,119 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+function buildSpanChildren(spans: TraceSpan[]): Map<string | null, TraceSpan[]> {
+  const map = new Map<string | null, TraceSpan[]>();
+  for (const span of spans) {
+    const siblings = map.get(span.parentSpanId) ?? [];
+    siblings.push(span);
+    map.set(span.parentSpanId, siblings);
+  }
+  for (const siblings of map.values()) {
+    siblings.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  }
+  return map;
+}
+
+function SpanNode({
+  span,
+  childrenBySpanId,
+  depth,
+}: {
+  span: TraceSpan;
+  childrenBySpanId: Map<string | null, TraceSpan[]>;
+  depth: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const children = childrenBySpanId.get(span.id) ?? [];
+  return (
+    <div className="span-node" style={{ marginLeft: depth * 18 }}>
+      <button type="button" className="span-row" onClick={() => setExpanded((value) => !value)}>
+        <span className={"span-status span-status-" + span.status}>
+          <span className="status-dot" />
+          {span.status}
+        </span>
+        <span className="span-name">{span.name}</span>
+        <span className="span-category">{span.category}</span>
+        <span className="span-duration">
+          {span.durationMs !== null ? span.durationMs + " ms" : "—"}
+        </span>
+      </button>
+      {span.errorMessage && <div className="span-error">{span.errorMessage}</div>}
+      {expanded && (
+        <pre className="span-attributes">{JSON.stringify(span.attributes, null, 2)}</pre>
+      )}
+      {children.map((child) => (
+        <SpanNode
+          key={child.id}
+          span={child}
+          childrenBySpanId={childrenBySpanId}
+          depth={depth + 1}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TracePanel({ runId, onClose }: { runId: string; onClose: () => void }) {
+  const [spans, setSpans] = useState<TraceSpan[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setSpans(null);
+    setError(null);
+    api
+      .trace(runId)
+      .then((result) => {
+        if (active) setSpans(result.spans);
+      })
+      .catch((reason) => {
+        if (active) setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      active = false;
+    };
+  }, [runId]);
+
+  const childrenBySpanId = useMemo(() => buildSpanChildren(spans ?? []), [spans]);
+  const roots = childrenBySpanId.get(null) ?? [];
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="modal modal-trace" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-heading">
+          <div>
+            <span className="eyebrow">Run diagnostics</span>
+            <h2>Trace</h2>
+            <p>Correlated Run and step events. Secrets are redacted before storage.</p>
+          </div>
+          <button type="button" onClick={onClose}>×</button>
+        </div>
+        {error && (
+          <div className="error-banner" role="alert">
+            {error}
+          </div>
+        )}
+        {!error && !spans && (
+          <div className="trace-loading">
+            <Spinner />
+          </div>
+        )}
+        {spans && roots.length === 0 && (
+          <p className="trace-empty">No spans recorded for this run.</p>
+        )}
+        {spans && roots.length > 0 && (
+          <div className="trace-tree">
+            {roots.map((root) => (
+              <SpanNode key={root.id} span={root} childrenBySpanId={childrenBySpanId} depth={0} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -49,6 +162,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
+  const [traceRunId, setTraceRunId] = useState<string | null>(null);
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -538,6 +652,17 @@ export default function App() {
                     <span>{activeRun.error}</span>
                   </article>
                 )}
+                {activeRun && ["completed", "failed", "cancelled"].includes(activeRun.status) && (
+                  <div className="trace-entry">
+                    <button
+                      type="button"
+                      className="button button-ghost"
+                      onClick={() => setTraceRunId(activeRun.id)}
+                    >
+                      View trace
+                    </button>
+                  </div>
+                )}
                 <div ref={messageEnd} />
               </div>
 
@@ -664,6 +789,10 @@ export default function App() {
             </div>
           </form>
         </div>
+      )}
+
+      {traceRunId && (
+        <TracePanel runId={traceRunId} onClose={() => setTraceRunId(null)} />
       )}
     </div>
   );

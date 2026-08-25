@@ -3,12 +3,21 @@ import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
+import {
+  buildEventSpans,
+  buildProcessSpan,
+  buildRunSpan,
+  completeSpan,
+  redactSecrets,
+} from "./trace.js";
 import type {
   Agent,
   AgentRun,
   AgentRunner,
   CreateAgentInput,
   Message,
+  SpanStatus,
+  TraceSpan,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -150,6 +159,14 @@ export class AgentService {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
+  getTrace(runId: string): TraceSpan[] {
+    this.getRun(runId);
+    return this.store
+      .snapshot()
+      .spans.filter((span) => span.runId === runId)
+      .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  }
+
   async sendMessage(
     agentId: string,
     prompt: string,
@@ -233,17 +250,36 @@ export class AgentService {
   }
 
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+    const runStartedAt = now();
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
         storedRun.status = "running";
-        storedRun.startedAt = now();
+        storedRun.startedAt = runStartedAt;
       }
     });
+    const secrets = this.config.arkApiKey ? [this.config.arkApiKey] : [];
+    const runSpan = buildRunSpan({
+      runId: run.id,
+      agentId: agentAtStart.id,
+      promptLength: run.prompt.length,
+      startedAt: runStartedAt,
+    });
+    let processSpan: TraceSpan | null = null;
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+      processSpan = buildProcessSpan({
+        runId: run.id,
+        agentId: agentAtStart.id,
+        parentSpanId: runSpan.id,
+        startedAt: now(),
+        sandboxMode: this.config.codexSandboxMode,
+        runtimeProvider: this.config.runtimeProvider,
+        containerEngine:
+          this.config.runtimeProvider === "container" ? this.config.containerEngine : null,
+      });
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
@@ -251,6 +287,15 @@ export class AgentService {
         threadId: agentAtStart.codexThreadId,
       });
       const completedAt = now();
+      const eventSpans = buildEventSpans(
+        result.events ?? [],
+        { runId: run.id, agentId: agentAtStart.id, parentSpanId: processSpan.id },
+        secrets,
+      );
+      const completedProcessSpan = completeSpan(processSpan, "ok", completedAt, null, {
+        usage: result.usage,
+      });
+      const completedRunSpan = completeSpan(runSpan, "ok", completedAt);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -267,6 +312,7 @@ export class AgentService {
           content: result.output,
           createdAt: completedAt,
         });
+        database.spans.push(completedRunSpan, completedProcessSpan, ...eventSpans);
         agent.status = "ready";
         agent.codexThreadId = result.threadId;
         agent.lastError = null;
@@ -276,6 +322,16 @@ export class AgentService {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
+      const redactedMessage = redactSecrets(message, secrets);
+      const status: SpanStatus = cancelled ? "cancelled" : "error";
+      const spans: TraceSpan[] = [
+        completeSpan(runSpan, status, completedAt, cancelled ? null : redactedMessage),
+      ];
+      if (processSpan) {
+        spans.push(
+          completeSpan(processSpan, status, completedAt, cancelled ? null : redactedMessage),
+        );
+      }
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -291,6 +347,7 @@ export class AgentService {
           agent.lastError = cancelled ? null : message;
           agent.updatedAt = completedAt;
         }
+        database.spans.push(...spans);
       });
     }
   }

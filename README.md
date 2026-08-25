@@ -8,9 +8,19 @@ Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
 > [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+> This is a single-user proof of concept. It intentionally has no identity or
+> hardened sandbox middleware. Do not use production data or credentials.
+> See [SECURITY.md](SECURITY.md).
+
+## Selected hackathon track
+
+**Glass Box: trace and audit.** Every Agent Run now produces a correlated,
+redacted trace (Run → Codex process → individual Codex events), viewable from
+the Playground via **View trace** on any completed, failed, or cancelled Run.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#observability-glass-box-track)
+for the design and trust boundary, and `apps/server/src/trace.test.ts` /
+`apps/server/src/agent-service.test.ts` for automated evidence covering both
+a successful run and a failing run.
 
 ## Screenshots
 

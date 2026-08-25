@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
-import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
+import type { AgentRunner, RawCodexEvent, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
 class FakeRunner implements AgentRunner {
@@ -78,6 +78,61 @@ describe("Agent lifecycle", () => {
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(messages[1]?.content).toContain("write hello world");
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
+  });
+
+  it("records a correlated, successful trace for a completed run", async () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: new Date().toISOString(),
+        event: { type: "item.completed", item: { type: "agent_message", text: "hi" } },
+      },
+    ];
+    const runner: AgentRunner = {
+      run: async (request) => ({
+        output: "Completed: " + request.prompt,
+        threadId: "fake-thread",
+        usage: { inputTokens: 1, outputTokens: 1 },
+        events,
+      }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Traced" });
+    const { run } = await service.sendMessage(agent.id, "write hello world");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const spans = service.getTrace(run.id);
+    const root = spans.find((span) => span.parentSpanId === null);
+    expect(root?.category).toBe("orchestration");
+    expect(root?.status).toBe("ok");
+    const process = spans.find((span) => span.parentSpanId === root?.id);
+    expect(process?.category).toBe("runtime.process");
+    expect(process?.status).toBe("ok");
+    const eventSpan = spans.find((span) => span.parentSpanId === process?.id);
+    expect(eventSpan?.category).toBe("model.message");
+    expect(spans.every((span) => span.runId === run.id)).toBe(true);
+  });
+
+  it("identifies the failing step when a run fails", async () => {
+    const runner: AgentRunner = {
+      run: async () => {
+        throw new Error("Codex exited with code 1: boom");
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Failing" });
+    const { run } = await service.sendMessage(agent.id, "break things");
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+
+    const spans = service.getTrace(run.id);
+    const root = spans.find((span) => span.parentSpanId === null);
+    expect(root?.status).toBe("error");
+    const process = spans.find((span) => span.parentSpanId === root?.id);
+    expect(process?.status).toBe("error");
+    expect(process?.errorMessage).toContain("boom");
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {

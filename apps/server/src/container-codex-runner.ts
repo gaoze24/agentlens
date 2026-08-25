@@ -5,6 +5,7 @@ import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
+  RawCodexEvent,
   RunUsage,
   RunnerRequest,
   RunnerResult,
@@ -27,6 +28,7 @@ interface ParsedEvents {
   threadId: string | null;
   usage: RunUsage | null;
   errors: string[];
+  rawEvents: RawCodexEvent[];
 }
 
 export function containerName(agentId: string, instanceId = "default"): string {
@@ -171,6 +173,7 @@ export class ContainerCodexRunner implements AgentRunner {
       threadId: request.threadId,
       usage: null,
       errors: [],
+      rawEvents: [],
     };
     let stdout = "";
     let stderr = "";
@@ -228,7 +231,7 @@ export class ContainerCodexRunner implements AgentRunner {
       }
       const output = parsed.messages.at(-1)?.trim();
       if (!output) throw new Error("Codex completed without an agent message");
-      return { output, threadId: parsed.threadId, usage: parsed.usage };
+      return { output, threadId: parsed.threadId, usage: parsed.usage, events: parsed.rawEvents };
     } finally {
       clearTimeout(timeout);
       this.active.delete(request.agentId);

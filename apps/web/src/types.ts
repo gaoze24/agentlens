@@ -38,6 +38,23 @@ export interface AgentRun {
   createdAt: string;
 }
 
+export type SpanStatus = "ok" | "error" | "cancelled";
+
+export interface TraceSpan {
+  id: string;
+  runId: string;
+  agentId: string;
+  parentSpanId: string | null;
+  category: string;
+  name: string;
+  status: SpanStatus;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  attributes: Record<string, unknown>;
+  errorMessage: string | null;
+}
+
 export interface SystemInfo {
   arkConfigured: boolean;
   arkBaseUrl: string;

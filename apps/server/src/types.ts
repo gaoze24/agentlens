@@ -43,11 +43,29 @@ export interface AgentRun {
   createdAt: string;
 }
 
+export type SpanStatus = "ok" | "error" | "cancelled";
+
+export interface TraceSpan {
+  id: string;
+  runId: string;
+  agentId: string;
+  parentSpanId: string | null;
+  category: string;
+  name: string;
+  status: SpanStatus;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  attributes: Record<string, unknown>;
+  errorMessage: string | null;
+}
+
 export interface Database {
   version: 1;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  spans: TraceSpan[];
 }
 
 export interface CreateAgentInput {
@@ -62,10 +80,16 @@ export interface UpdateAgentInput {
   instructions?: string | undefined;
 }
 
+export interface RawCodexEvent {
+  observedAt: string;
+  event: Record<string, unknown>;
+}
+
 export interface RunnerResult {
   output: string;
   threadId: string | null;
   usage: RunUsage | null;
+  events?: RawCodexEvent[];
 }
 
 export interface RunnerRequest {
