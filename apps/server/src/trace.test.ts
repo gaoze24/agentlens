@@ -141,6 +141,27 @@ describe("buildEventSpans", () => {
     expect(spans[0]?.errorMessage).not.toContain(SECRET);
   });
 
+  it("flags a nested item.type: error as a failed span with its message extracted", () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:00.150Z",
+        event: {
+          type: "item.completed",
+          item: {
+            id: "item_0",
+            type: "error",
+            message: `Model metadata for ${SECRET} not found.`,
+          },
+        },
+      },
+    ];
+    const spans = buildEventSpans(events, context, [SECRET]);
+    expect(spans[0]?.category).toBe("runtime.error");
+    expect(spans[0]?.status).toBe("error");
+    expect(spans[0]?.errorMessage).toContain("Model metadata for");
+    expect(spans[0]?.errorMessage).not.toContain(SECRET);
+  });
+
   it("falls back to an unknown.<type> category for unrecognized item types", () => {
     const events: RawCodexEvent[] = [
       {

@@ -132,6 +132,7 @@ function categoryForEvent(event: Record<string, unknown>): string {
     if (itemType === "agent_message") return "model.message";
     if (itemType === "reasoning") return "model.reasoning";
     if (itemType === "command_execution" || itemType === "file_change") return "tool.call";
+    if (itemType === "error") return "runtime.error";
     return "unknown." + itemType;
   }
   if (type === "turn.completed") return "model.turn";
@@ -151,12 +152,15 @@ function nameForEvent(event: Record<string, unknown>, category: string): string 
 }
 
 function messageForErrorEvent(event: Record<string, unknown>, secrets: readonly string[]): string {
+  const item = event.item as Record<string, unknown> | undefined;
   const raw =
     typeof event.message === "string"
       ? event.message
       : typeof event.error === "string"
         ? event.error
-        : JSON.stringify(event);
+        : item && typeof item.message === "string"
+          ? item.message
+          : JSON.stringify(event);
   return redactSecrets(raw, secrets);
 }
 
