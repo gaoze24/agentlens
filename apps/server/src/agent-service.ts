@@ -403,10 +403,13 @@ export class AgentService {
   }
 
   /**
-   * Buffers Codex events and flushes them to the store as provisional spans
-   * while the Run is still executing, so a trace can be watched live. The
-   * spans written here are replaced by the authoritative, capped set when the
-   * Run reaches a terminal state.
+   * Publishes the event spans observed so far while the Run is still
+   * executing, so a trace can be watched live. Each flush rebuilds the whole
+   * event-span set from the events seen to date and swaps it in, rather than
+   * appending deltas: an item.started span must be able to *close* when its
+   * item.completed arrives in a later batch, which an append-only stream
+   * cannot express. The spans written here are replaced by the same
+   * authoritative set once the Run reaches a terminal state.
    */
   private createEventStream(
     runId: string,
@@ -418,36 +421,41 @@ export class AgentService {
     observed: () => readonly RawCodexEvent[];
     stop: () => Promise<void>;
   } {
-    const pending: RawCodexEvent[] = [];
     const seen: RawCodexEvent[] = [];
     let parentSpanId: string | null = null;
-    let streamedCount = 0;
+    let dirty = false;
     let stopped = false;
     let timer: NodeJS.Timeout | null = null;
     let inFlight: Promise<void> = Promise.resolve();
 
-    const flush = () => {
+    const publish = () => {
       timer = null;
-      if (parentSpanId === null || pending.length === 0) return;
-      const budget = this.config.traceMaxEventSpansPerRun - streamedCount;
-      const batch = pending.splice(0, pending.length).slice(0, Math.max(0, budget));
-      if (batch.length === 0) return;
-      streamedCount += batch.length;
+      if (parentSpanId === null || !dirty) return;
+      dirty = false;
+      const parent = parentSpanId;
       const spans = buildEventSpans(
-        batch,
-        { runId, agentId, parentSpanId },
+        seen,
+        { runId, agentId, parentSpanId: parent },
         secrets,
-        Number.POSITIVE_INFINITY,
+        this.config.traceMaxEventSpansPerRun,
         this.config.traceCaptureLevel,
       );
       inFlight = inFlight
-        .then(() => this.appendSpans(spans))
+        .then(() =>
+          this.store.mutate((database) => {
+            database.spans = database.spans.filter(
+              (span) => !(span.runId === runId && span.parentSpanId === parent),
+            );
+            database.spans.push(...spans);
+          }),
+        )
+        .then(() => undefined)
         .catch(() => undefined);
     };
 
     const schedule = () => {
       if (stopped || timer !== null) return;
-      timer = setTimeout(flush, TRACE_FLUSH_INTERVAL_MS);
+      timer = setTimeout(publish, TRACE_FLUSH_INTERVAL_MS);
       timer.unref();
     };
 
@@ -455,20 +463,24 @@ export class AgentService {
       onEvent: (event) => {
         if (stopped) return;
         seen.push(event);
-        pending.push(event);
+        dirty = true;
         schedule();
       },
-      observed: () => seen,
       attachTo: (spanId) => {
         parentSpanId = spanId;
-        if (pending.length > 0) schedule();
+        if (dirty) schedule();
       },
+      observed: () => seen,
       stop: async () => {
-        stopped = true;
         if (timer !== null) {
           clearTimeout(timer);
           timer = null;
         }
+        // Drain rather than discard: events that arrive inside the last flush
+        // window would otherwise never be published, and Codex emits much of
+        // its event burst immediately before a turn ends.
+        publish();
+        stopped = true;
         await inFlight;
       },
     };

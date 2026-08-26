@@ -253,10 +253,59 @@ export function buildEventSpans(
     dropped > 0
       ? [truncationSpan(context, dropped, events[0]?.observedAt ?? new Date().toISOString())]
       : [];
-  return notice.concat(kept.map((raw) => {
+
+  const spans: TraceSpan[] = [];
+  /** Items Codex has started but not yet completed, keyed by Codex item id. */
+  const open = new Map<string, TraceSpan>();
+
+  for (const raw of kept) {
+    const type = typeof raw.event.type === "string" ? raw.event.type : "";
+    const item = raw.event.item as Record<string, unknown> | undefined;
+    const itemId = item && typeof item.id === "string" ? item.id : null;
     const category = categoryForEvent(raw.event);
     const isError = category === "runtime.error";
-    return {
+
+    // An item.started opens a span that stays "running" until its matching
+    // item.completed arrives. This is what makes a long tool call visible
+    // while it is still executing, and gives event spans a real duration
+    // instead of a zero-width point.
+    if (type === "item.started" && itemId !== null && !open.has(itemId)) {
+      const span: TraceSpan = {
+        id: randomUUID(),
+        runId: context.runId,
+        agentId: context.agentId,
+        parentSpanId: context.parentSpanId,
+        category,
+        name: nameForEvent(raw.event, category),
+        status: "running",
+        startedAt: raw.observedAt,
+        completedAt: null,
+        durationMs: null,
+        attributes: redactAttributes(raw.event, secrets, captureLevel),
+        errorMessage: null,
+      };
+      open.set(itemId, span);
+      spans.push(span);
+      continue;
+    }
+
+    if (type === "item.completed" && itemId !== null) {
+      const started = open.get(itemId);
+      if (started) {
+        open.delete(itemId);
+        // The completed event carries the authoritative type and payload.
+        started.category = category;
+        started.name = nameForEvent(raw.event, category);
+        started.status = isError ? "error" : "ok";
+        started.completedAt = raw.observedAt;
+        started.durationMs = durationBetween(started.startedAt, raw.observedAt);
+        started.attributes = redactAttributes(raw.event, secrets, captureLevel);
+        started.errorMessage = isError ? messageForErrorEvent(raw.event, secrets) : null;
+        continue;
+      }
+    }
+
+    spans.push({
       id: randomUUID(),
       runId: context.runId,
       agentId: context.agentId,
@@ -269,8 +318,10 @@ export function buildEventSpans(
       durationMs: 0,
       attributes: redactAttributes(raw.event, secrets, captureLevel),
       errorMessage: isError ? messageForErrorEvent(raw.event, secrets) : null,
-    } satisfies TraceSpan;
-  }));
+    });
+  }
+
+  return notice.concat(spans);
 }
 
 /**

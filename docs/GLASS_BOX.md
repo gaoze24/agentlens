@@ -41,7 +41,14 @@ flowchart TD
 | --- | --- | --- |
 | Root | `orchestration` | The whole Run: status, wall-clock duration, terminal error. |
 | Process | `runtime.process` | One Runtime invocation: sandbox mode, runtime provider, container engine, token usage. |
-| Event | `model.*`, `tool.call`, `runtime.error`, `unknown.*` | One Codex CLI JSON event, with its redacted payload as span attributes. |
+| Event | `model.*`, `tool.call`, `runtime.error`, `unknown.*` | One Codex CLI item, with its redacted payload as span attributes. |
+
+Event spans pair Codex's `item.started` and `item.completed` for the same item
+id into a **single** span: the `started` event opens it as `running`, the
+`completed` event closes it with a real duration and the authoritative payload.
+A tool call is therefore visible *while it is still executing*, not only after
+it returns. A `completed` event with no matching `started` remains a zero-width
+point span.
 
 ## Boundary and ownership
 
@@ -80,9 +87,17 @@ A span is written twice: open, then closed.
 | Phase | Root span | Process span | Event spans |
 | --- | --- | --- | --- |
 | Run accepted | `running`, `completedAt: null` | — | — |
-| Runtime invoked | `running` | `running` | stream in, batched |
+| Runtime invoked | `running` | `running` | published as observed; an open item is `running` |
+| Item completes | `running` | `running` | its span closes with a real duration |
 | Terminal state | `ok` / `error` / `cancelled` | same | replaced by the authoritative capped set |
 | Process killed mid-Run | `cancelled` on restart | `cancelled` on restart | retained as observed |
+
+Each flush rebuilds the event-span set from every event seen so far and swaps
+it in, rather than appending deltas — an `item.started` span has to be able to
+*close* when its `item.completed` arrives in a later batch, which an
+append-only stream cannot express. Stopping the stream drains the buffer rather
+than discarding it, because Codex emits much of its event burst in the last
+moments of a turn.
 
 If the server dies mid-Run, `initialize()` force-cancels the orphaned Run *and*
 closes every span still marked `running`, stamping
@@ -201,6 +216,9 @@ including a span whose payload carries planted secrets already replaced with
 | Trace is readable while a Run executes | `agent-service.test.ts` — "exposes an open trace while the Run is still executing" |
 | Streamed spans are not duplicated at finalisation | `agent-service.test.ts` — "does not duplicate spans that were streamed" |
 | A streaming runner reporting no events keeps its trace | `agent-service.test.ts` — "keeps streamed spans when the runner reports no events" |
+| started/completed pair into one span with a real duration | `trace.test.ts` — "item.started / item.completed pairing" |
+| An in-flight tool call is visible as `running` mid-turn | `agent-service.test.ts` — "shows an in-flight tool call as a running span" |
+| Events arriving in the last flush window are not lost | `agent-service.test.ts` — "publishes events that arrive inside the final flush window" |
 | Crash leaves no span stuck open | `agent-service.test.ts` — "closes spans left open by a crash when the server restarts" |
 | Unconfigured credential shapes are redacted | `trace.test.ts` — "credential pattern redaction" |
 | Capture level bounds stored payloads | `trace.test.ts` — "capture level" |
@@ -213,14 +231,26 @@ Run everything with `npm run check`.
   to avoid rewriting the whole JSON store per event, and the browser polls the
   trace every 1.2 s, so the live view lags a Run by up to ~2 s. A push transport
   (SSE or WebSocket) would remove both delays; the span model does not change.
+- **How much there is to watch depends on the task.** Liveness comes from
+  Codex's `item.started` events. A turn that spends 30 s in a single model call
+  before doing anything shows only the open Run and process spans for those
+  30 s — correct, but sparse. Tasks that run several commands produce a visibly
+  filling timeline.
+- **The assistant reply itself is not streamed.** The trace streams, the answer
+  does not: `RunnerResult.output` is taken from the last completed
+  `agent_message` when the Codex process exits, and the assistant message row is
+  written once, at Run completion. Token-level streaming would need a transport
+  from the control plane to the browser (SSE) plus delta handling in the runner;
+  it is orthogonal to this middleware.
 - **Single-process JSON store.** Inherited from the Starter Kit. Spans share
   its one-process, whole-file-rewrite limitation; a real deployment would send
   spans to an OTLP collector instead. The span shape (id, parent, category,
   status, timings, attributes) maps onto OpenTelemetry deliberately.
 - **Event timestamps are observation times.** `observedAt` is when the control
-  plane read the JSON line, not when Codex emitted it, so event spans are
-  point-in-time (`durationMs: 0`) rather than true intervals. Codex does not
-  emit paired start/end events for every item type.
+  plane read the JSON line, not when Codex emitted it, so durations carry the
+  control plane's scheduling jitter (single-digit milliseconds in practice).
+  Item types Codex reports only on completion have no `started` event to pair
+  with and remain zero-width point spans.
 - **Redaction is pattern-matching.** It covers configured secrets plus the
   credential shapes listed above. A secret in a shape not on that list, or one
   that is base64/hex-encoded before being printed, would not be recognized.

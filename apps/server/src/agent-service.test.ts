@@ -276,6 +276,79 @@ describe("Agent lifecycle", () => {
     expect(spans).toHaveLength(3);
   });
 
+  it("shows an in-flight tool call as a running span before the turn ends", async () => {
+    let release!: (result: RunnerResult) => void;
+    const pending = new Promise<RunnerResult>((resolve) => {
+      release = resolve;
+    });
+    let emit!: (event: Record<string, unknown>) => void;
+    const service = await makeService({
+      run: (request) => {
+        emit = (event) =>
+          request.onEvent?.({ observedAt: new Date().toISOString(), event });
+        return pending;
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "InFlight" });
+    const { run } = await service.sendMessage(agent.id, "run a slow command");
+    await expect.poll(() => service.getTrace(run.id).length).toBeGreaterThanOrEqual(2);
+
+    emit({ type: "item.started", item: { id: "i1", type: "command_execution" } });
+    await expect
+      .poll(() =>
+        service
+          .getTrace(run.id)
+          .some((span) => span.category === "tool.call" && span.status === "running"),
+      )
+      .toBe(true);
+
+    emit({
+      type: "item.completed",
+      item: { id: "i1", type: "command_execution", command: "npm test" },
+    });
+    await expect
+      .poll(() =>
+        service
+          .getTrace(run.id)
+          .some((span) => span.category === "tool.call" && span.status === "ok"),
+      )
+      .toBe(true);
+    // The pair collapsed into one span rather than producing two.
+    expect(
+      service.getTrace(run.id).filter((span) => span.category === "tool.call"),
+    ).toHaveLength(1);
+
+    release({ output: "done", threadId: "t", usage: null, events: [] });
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+
+  it("publishes events that arrive inside the final flush window", async () => {
+    // Codex emits much of its event burst immediately before a turn ends, so
+    // stopping the stream must drain the buffer rather than discard it.
+    const service = await makeService({
+      run: async (request) => {
+        request.onEvent?.({
+          observedAt: new Date().toISOString(),
+          event: {
+            type: "item.completed",
+            item: { id: "i1", type: "command_execution", command: "npm test" },
+          },
+        });
+        return { output: "done", threadId: "t", usage: null, events: [] };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "LateBurst" });
+    const { run } = await service.sendMessage(agent.id, "go");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(
+      service.getTrace(run.id).filter((span) => span.category === "tool.call"),
+    ).toHaveLength(1);
+  });
+
   it("keeps streamed spans when the runner reports no events at completion", async () => {
     // A runner may stream events and return none; finalisation must not wipe
     // the trace the control plane already observed.

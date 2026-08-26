@@ -328,3 +328,99 @@ describe("capture level", () => {
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 });
+
+describe("item.started / item.completed pairing", () => {
+  const context = { runId: "run-1", agentId: "agent-1", parentSpanId: "process-1" };
+
+  it("collapses a started/completed pair into one span with a real duration", () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:00.000Z",
+        event: { type: "item.started", item: { id: "i1", type: "command_execution" } },
+      },
+      {
+        observedAt: "2026-01-01T00:00:02.500Z",
+        event: {
+          type: "item.completed",
+          item: { id: "i1", type: "command_execution", command: "npm test", exit_code: 0 },
+        },
+      },
+    ];
+    const spans = buildEventSpans(events, context, []);
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.category).toBe("tool.call");
+    expect(spans[0]?.status).toBe("ok");
+    expect(spans[0]?.durationMs).toBe(2_500);
+    expect(spans[0]?.startedAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(spans[0]?.completedAt).toBe("2026-01-01T00:00:02.500Z");
+    // The payload comes from the completed event, which carries the detail.
+    expect((spans[0]?.attributes.item as { command: string }).command).toBe("npm test");
+  });
+
+  it("leaves an item that has started but not completed open and running", () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:00.000Z",
+        event: { type: "item.started", item: { id: "i1", type: "command_execution" } },
+      },
+    ];
+    const spans = buildEventSpans(events, context, []);
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.status).toBe("running");
+    expect(spans[0]?.completedAt).toBeNull();
+    expect(spans[0]?.durationMs).toBeNull();
+  });
+
+  it("marks a paired item that completed as an error as failed", () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:00.000Z",
+        event: { type: "item.started", item: { id: "i1", type: "command_execution" } },
+      },
+      {
+        observedAt: "2026-01-01T00:00:01.000Z",
+        event: { type: "item.completed", item: { id: "i1", type: "error", message: "boom" } },
+      },
+    ];
+    const spans = buildEventSpans(events, context, []);
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.status).toBe("error");
+    expect(spans[0]?.errorMessage).toContain("boom");
+  });
+
+  it("still emits a point span for a completed item that never announced a start", () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:01.000Z",
+        event: { type: "item.completed", item: { id: "i9", type: "agent_message", text: "hi" } },
+      },
+    ];
+    const spans = buildEventSpans(events, context, []);
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.status).toBe("ok");
+    expect(spans[0]?.durationMs).toBe(0);
+  });
+
+  it("keeps concurrent items apart", () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:00.000Z",
+        event: { type: "item.started", item: { id: "a", type: "command_execution" } },
+      },
+      {
+        observedAt: "2026-01-01T00:00:00.500Z",
+        event: { type: "item.started", item: { id: "b", type: "command_execution" } },
+      },
+      {
+        observedAt: "2026-01-01T00:00:01.000Z",
+        event: { type: "item.completed", item: { id: "b", type: "command_execution" } },
+      },
+    ];
+    const spans = buildEventSpans(events, context, []);
+    expect(spans).toHaveLength(2);
+    const [first, second] = spans;
+    expect(first?.status).toBe("running");
+    expect(second?.status).toBe("ok");
+    expect(second?.durationMs).toBe(500);
+  });
+});
