@@ -88,14 +88,37 @@ function SpanNode({
   );
 }
 
-function TracePanel({ runId, onClose }: { runId: string; onClose: () => void }) {
+function formatDuration(ms: number | null): string {
+  if (ms === null) return "—";
+  if (ms < 1_000) return ms + " ms";
+  return (ms / 1_000).toFixed(1) + " s";
+}
+
+function totalTokens(usage: AgentRun["usage"]): number | null {
+  if (!usage) return null;
+  const input = usage.inputTokens ?? 0;
+  const output = usage.outputTokens ?? 0;
+  return input + output > 0 ? input + output : null;
+}
+
+function TracePanel({
+  runId,
+  run,
+  onClose,
+}: {
+  runId: string;
+  run: AgentRun | null;
+  onClose: () => void;
+}) {
   const [spans, setSpans] = useState<TraceSpan[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorsOnly, setErrorsOnly] = useState(false);
 
   useEffect(() => {
     let active = true;
     setSpans(null);
     setError(null);
+    setErrorsOnly(false);
     api
       .trace(runId)
       .then((result) => {
@@ -111,6 +134,25 @@ function TracePanel({ runId, onClose }: { runId: string; onClose: () => void }) 
 
   const childrenBySpanId = useMemo(() => buildSpanChildren(spans ?? []), [spans]);
   const roots = childrenBySpanId.get(null) ?? [];
+  const failingSpans = useMemo(
+    () => (spans ?? []).filter((span) => span.status === "error"),
+    [spans],
+  );
+  const rootSpan = roots[0] ?? null;
+  const tokens = totalTokens(run?.usage ?? null);
+
+  const exportTrace = () => {
+    if (!spans) return;
+    const blob = new Blob([JSON.stringify({ runId, spans }, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "trace-" + runId + ".json";
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -123,6 +165,46 @@ function TracePanel({ runId, onClose }: { runId: string; onClose: () => void }) 
           </div>
           <button type="button" onClick={onClose}>×</button>
         </div>
+
+        {spans && (
+          <div className="trace-summary">
+            <div>
+              <span className="trace-summary-label">Status</span>
+              <span className={"span-status span-status-" + (rootSpan?.status ?? "ok")}>
+                <span className="status-dot" />
+                {run?.status ?? rootSpan?.status ?? "unknown"}
+              </span>
+            </div>
+            <div>
+              <span className="trace-summary-label">Duration</span>
+              <strong>{formatDuration(rootSpan?.durationMs ?? null)}</strong>
+            </div>
+            <div>
+              <span className="trace-summary-label">Spans</span>
+              <strong>{spans.length}</strong>
+            </div>
+            <div>
+              <span className="trace-summary-label">Tokens</span>
+              <strong>{tokens === null ? "—" : tokens}</strong>
+            </div>
+            <div className="trace-summary-actions">
+              <button
+                type="button"
+                className="button button-ghost"
+                disabled={failingSpans.length === 0}
+                onClick={() => setErrorsOnly((value) => !value)}
+              >
+                {errorsOnly
+                  ? "Show all spans"
+                  : "Failing steps (" + failingSpans.length + ")"}
+              </button>
+              <button type="button" className="button button-ghost" onClick={exportTrace}>
+                Export JSON
+              </button>
+            </div>
+          </div>
+        )}
+
         {error && (
           <div className="error-banner" role="alert">
             {error}
@@ -136,7 +218,19 @@ function TracePanel({ runId, onClose }: { runId: string; onClose: () => void }) 
         {spans && roots.length === 0 && (
           <p className="trace-empty">No spans recorded for this run.</p>
         )}
-        {spans && roots.length > 0 && (
+        {spans && roots.length > 0 && errorsOnly && (
+          <div className="trace-tree">
+            {failingSpans.map((span) => (
+              <SpanNode
+                key={span.id}
+                span={span}
+                childrenBySpanId={new Map()}
+                depth={0}
+              />
+            ))}
+          </div>
+        )}
+        {spans && roots.length > 0 && !errorsOnly && (
           <div className="trace-tree">
             {roots.map((root) => (
               <SpanNode key={root.id} span={root} childrenBySpanId={childrenBySpanId} depth={0} />
@@ -146,6 +240,77 @@ function TracePanel({ runId, onClose }: { runId: string; onClose: () => void }) 
       </div>
     </div>
   );
+}
+
+const runFilters = ["all", "completed", "failed", "cancelled"] as const;
+type RunFilter = (typeof runFilters)[number];
+
+function RunsPanel({
+  runs,
+  onClose,
+  onSelectRun,
+}: {
+  runs: AgentRun[];
+  onClose: () => void;
+  onSelectRun: (run: AgentRun) => void;
+}) {
+  const [filter, setFilter] = useState<RunFilter>("all");
+  const visible = runs.filter((run) => filter === "all" || run.status === filter);
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="modal modal-trace" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-heading">
+          <div>
+            <span className="eyebrow">Run history</span>
+            <h2>Runs</h2>
+            <p>Every Run this Agent has executed. Open one to inspect its trace.</p>
+          </div>
+          <button type="button" onClick={onClose}>×</button>
+        </div>
+        <div className="run-filters">
+          {runFilters.map((option) => (
+            <button
+              key={option}
+              type="button"
+              className={"run-filter" + (filter === option ? " run-filter-active" : "")}
+              onClick={() => setFilter(option)}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+        {visible.length === 0 ? (
+          <p className="trace-empty">No Runs match this filter.</p>
+        ) : (
+          <div className="trace-tree">
+            {visible.map((run) => (
+              <button
+                key={run.id}
+                type="button"
+                className="run-row"
+                onClick={() => onSelectRun(run)}
+                disabled={["queued", "running"].includes(run.status)}
+              >
+                <span className={"span-status span-status-" + statusToSpanStatus(run.status)}>
+                  <span className="status-dot" />
+                  {run.status}
+                </span>
+                <span className="run-row-prompt">{run.prompt}</span>
+                <span className="span-duration">{formatTime(run.createdAt)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function statusToSpanStatus(status: AgentRun["status"]): string {
+  if (status === "failed") return "error";
+  if (status === "cancelled") return "cancelled";
+  return "ok";
 }
 
 export default function App() {
@@ -162,7 +327,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
-  const [traceRunId, setTraceRunId] = useState<string | null>(null);
+  const [traceRun, setTraceRun] = useState<AgentRun | null>(null);
+  const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [showRuns, setShowRuns] = useState(false);
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -191,6 +358,14 @@ export default function App() {
     }
   }, []);
 
+  const refreshRuns = useCallback(async (agentId: string) => {
+    const result = await api.runs(agentId);
+    if (mountedRef.current && selectedIdRef.current === agentId) {
+      setRuns(result.runs);
+    }
+    return result.runs;
+  }, []);
+
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), api.system().then(setSystem)]);
   }, [refreshAgents]);
@@ -212,15 +387,18 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setRuns([]);
+    setShowRuns(false);
+    setTraceRun(null);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
-      .then(([, result]) => {
+    void Promise.all([refreshMessages(selectedId), refreshRuns(selectedId)])
+      .then(([, agentRuns]) => {
         if (selectedIdRef.current !== selectedId) return;
-        const latest = result.runs[0] ?? null;
+        const latest = agentRuns[0] ?? null;
         setActiveRun(latest);
         if (latest && ["queued", "running"].includes(latest.status)) {
           void pollRun(latest.id, selectedId).catch((reason) =>
@@ -231,7 +409,7 @@ export default function App() {
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
-  }, [refreshMessages, selectedId]);
+  }, [refreshMessages, refreshRuns, selectedId]);
 
   useEffect(() => {
     if (selected) {
@@ -325,7 +503,7 @@ export default function App() {
         const result = await api.run(runId);
         if (selectedIdRef.current === agentId) setActiveRun(result.run);
         if (!["queued", "running"].includes(result.run.status)) {
-          await Promise.all([refreshMessages(agentId), refreshAgents()]);
+          await Promise.all([refreshMessages(agentId), refreshAgents(), refreshRuns(agentId)]);
           return;
         }
       }
@@ -652,17 +830,26 @@ export default function App() {
                     <span>{activeRun.error}</span>
                   </article>
                 )}
-                {activeRun && ["completed", "failed", "cancelled"].includes(activeRun.status) && (
-                  <div className="trace-entry">
+                <div className="trace-entry">
+                  {activeRun && ["completed", "failed", "cancelled"].includes(activeRun.status) && (
                     <button
                       type="button"
                       className="button button-ghost"
-                      onClick={() => setTraceRunId(activeRun.id)}
+                      onClick={() => setTraceRun(activeRun)}
                     >
                       View trace
                     </button>
-                  </div>
-                )}
+                  )}
+                  {runs.length > 0 && (
+                    <button
+                      type="button"
+                      className="button button-ghost"
+                      onClick={() => setShowRuns(true)}
+                    >
+                      Run history ({runs.length})
+                    </button>
+                  )}
+                </div>
                 <div ref={messageEnd} />
               </div>
 
@@ -791,8 +978,23 @@ export default function App() {
         </div>
       )}
 
-      {traceRunId && (
-        <TracePanel runId={traceRunId} onClose={() => setTraceRunId(null)} />
+      {showRuns && (
+        <RunsPanel
+          runs={runs}
+          onClose={() => setShowRuns(false)}
+          onSelectRun={(run) => {
+            setShowRuns(false);
+            setTraceRun(run);
+          }}
+        />
+      )}
+
+      {traceRun && (
+        <TracePanel
+          runId={traceRun.id}
+          run={traceRun}
+          onClose={() => setTraceRun(null)}
+        />
       )}
     </div>
   );

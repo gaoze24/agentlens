@@ -957,6 +957,7 @@ textarea:focus {
 .trace-entry {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
 }
 
 .trace-loading {
@@ -1211,4 +1212,83 @@ textarea:focus {
   .form-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.trace-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 12px;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.trace-summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.trace-summary-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.trace-summary-actions {
+  flex-direction: row !important;
+  gap: 8px !important;
+  margin-left: auto;
+}
+
+.run-filters {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.run-filter {
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+
+.run-filter-active {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.run-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.run-row:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.run-row-prompt {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
 }

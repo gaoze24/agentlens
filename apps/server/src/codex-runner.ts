@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
-import { RunCancelledError } from "./errors.js";
+import { attachRunnerEvents, RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
   RawCodexEvent,
@@ -226,6 +226,8 @@ export class CodexRunner implements AgentRunner {
         usage: parsed.usage,
         events: parsed.rawEvents,
       };
+    } catch (error) {
+      throw attachRunnerEvents(error, parsed.rawEvents);
     } finally {
       clearTimeout(timeout);
       if (active.forceKillTimer) clearTimeout(active.forceKillTimer);

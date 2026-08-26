@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
-import { HttpError, RunCancelledError } from "./errors.js";
+import { HttpError, RunCancelledError, runnerEventsFrom } from "./errors.js";
 import { JsonStore } from "./store.js";
 import {
   buildEventSpans,
   buildProcessSpan,
   buildRunSpan,
   completeSpan,
+  pruneSpans,
   redactSecrets,
 } from "./trace.js";
 import type {
@@ -121,6 +122,7 @@ export class AgentService {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
+      database.spans = database.spans.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
   }
@@ -291,6 +293,7 @@ export class AgentService {
         result.events ?? [],
         { runId: run.id, agentId: agentAtStart.id, parentSpanId: processSpan.id },
         secrets,
+        this.config.traceMaxEventSpansPerRun,
       );
       const completedProcessSpan = completeSpan(processSpan, "ok", completedAt, null, {
         usage: result.usage,
@@ -313,6 +316,7 @@ export class AgentService {
           createdAt: completedAt,
         });
         database.spans.push(completedRunSpan, completedProcessSpan, ...eventSpans);
+        database.spans = pruneSpans(database.spans, this.config.traceRetentionRuns);
         agent.status = "ready";
         agent.codexThreadId = result.threadId;
         agent.lastError = null;
@@ -330,6 +334,12 @@ export class AgentService {
       if (processSpan) {
         spans.push(
           completeSpan(processSpan, status, completedAt, cancelled ? null : redactedMessage),
+          ...buildEventSpans(
+            runnerEventsFrom(error),
+            { runId: run.id, agentId: agentAtStart.id, parentSpanId: processSpan.id },
+            secrets,
+            this.config.traceMaxEventSpansPerRun,
+          ),
         );
       }
       await this.store.mutate((database) => {
@@ -337,17 +347,18 @@ export class AgentService {
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (storedRun) {
           storedRun.status = cancelled ? "cancelled" : "failed";
-          storedRun.error = message;
+          storedRun.error = redactedMessage;
           storedRun.completedAt = completedAt;
         }
         if (agent) {
           if (agent.status !== "stopped") {
             agent.status = cancelled ? "ready" : "error";
           }
-          agent.lastError = cancelled ? null : message;
+          agent.lastError = cancelled ? null : redactedMessage;
           agent.updatedAt = completedAt;
         }
         database.spans.push(...spans);
+        database.spans = pruneSpans(database.spans, this.config.traceRetentionRuns);
       });
     }
   }

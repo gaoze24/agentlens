@@ -4,6 +4,7 @@ import {
   buildProcessSpan,
   buildRunSpan,
   completeSpan,
+  pruneSpans,
   redactAttributes,
   redactSecrets,
 } from "./trace.js";
@@ -191,5 +192,66 @@ describe("buildEventSpans", () => {
     const spans = buildEventSpans(events, context, [SECRET]);
     const serialized = JSON.stringify(spans);
     expect(serialized).not.toContain(SECRET);
+  });
+});
+
+describe("event span capping", () => {
+  const context = { runId: "run-1", agentId: "agent-1", parentSpanId: "process-1" };
+
+  it("keeps the most recent events and records how many were dropped", () => {
+    const events: RawCodexEvent[] = Array.from({ length: 10 }, (_, index) => ({
+      observedAt: `2026-01-01T00:00:0${index}.000Z`,
+      event: { type: "item.completed", item: { type: "agent_message", text: "m" + index } },
+    }));
+    const spans = buildEventSpans(events, context, [], 4);
+    expect(spans).toHaveLength(5);
+    expect(spans[0]?.category).toBe("trace.truncated");
+    expect(spans[0]?.attributes.droppedEventCount).toBe(6);
+    const lastAttributes = spans.at(-1)?.attributes as { item: { text: string } };
+    expect(lastAttributes.item.text).toBe("m9");
+  });
+
+  it("adds no notice span when the event count is within the cap", () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:00.000Z",
+        event: { type: "item.completed", item: { type: "agent_message", text: "hi" } },
+      },
+    ];
+    expect(buildEventSpans(events, context, [], 4)).toHaveLength(1);
+  });
+});
+
+describe("pruneSpans", () => {
+  const spanForRun = (runId: string, startedAt: string) => ({
+    id: runId + ":" + startedAt,
+    runId,
+    agentId: "agent-1",
+    parentSpanId: null,
+    category: "orchestration",
+    name: "run.orchestration",
+    status: "ok" as const,
+    startedAt,
+    completedAt: startedAt,
+    durationMs: 0,
+    attributes: {},
+    errorMessage: null,
+  });
+
+  it("returns every span while the Run count is within the limit", () => {
+    const spans = [spanForRun("a", "2026-01-01T00:00:00.000Z")];
+    expect(pruneSpans(spans, 2)).toHaveLength(1);
+  });
+
+  it("drops the oldest Runs whole rather than truncating a trace mid-tree", () => {
+    const spans = [
+      spanForRun("old", "2026-01-01T00:00:00.000Z"),
+      { ...spanForRun("old", "2026-01-01T00:00:01.000Z"), parentSpanId: "x" },
+      spanForRun("new", "2026-01-02T00:00:00.000Z"),
+      { ...spanForRun("new", "2026-01-02T00:00:01.000Z"), parentSpanId: "y" },
+    ];
+    const pruned = pruneSpans(spans, 1);
+    expect(pruned).toHaveLength(2);
+    expect(pruned.every((span) => span.runId === "new")).toBe(true);
   });
 });

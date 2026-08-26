@@ -118,5 +118,17 @@ place; the string-match redaction is defense in depth. `GET
 /api/runs/:id/trace` sits behind the same bearer-auth boundary as every
 other `/api/*` route.
 
-View a Run's trace from the Playground via the **View trace** button, shown
-once a Run reaches a terminal state (`completed`, `failed`, or `cancelled`).
+**Failure path.** Runners attach the events observed before a failure to the
+thrown error (`attachRunnerEvents` in `errors.ts`), so a failed or cancelled Run
+keeps its full step-by-step trace instead of only the two enclosing spans.
+`AgentRun.error` and `Agent.lastError` are redacted with the same function
+before they are stored.
+
+**Retention.** `TRACE_MAX_EVENT_SPANS_PER_RUN` caps event spans per Run (a
+`trace.truncated` span records the dropped count); `TRACE_RETENTION_RUNS` keeps
+the newest N Runs and discards older ones whole, so a retained trace is never
+left with half its tree missing. Deleting an Agent deletes its spans.
+
+View a Run's trace from the Playground via **View trace** on any terminal Run,
+or via **Run history** for earlier Runs. See [GLASS_BOX.md](GLASS_BOX.md) for
+the full design, demo script, and limitations.

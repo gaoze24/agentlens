@@ -12,15 +12,35 @@ Volcengine ECS.
 > hardened sandbox middleware. Do not use production data or credentials.
 > See [SECURITY.md](SECURITY.md).
 
-## Selected hackathon track
+## Team-designed middleware: Glass Box trace and audit
 
-**Glass Box: trace and audit.** Every Agent Run now produces a correlated,
-redacted trace (Run → Codex process → individual Codex events), viewable from
-the Playground via **View trace** on any completed, failed, or cancelled Run.
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#observability-glass-box-track)
-for the design and trust boundary, and `apps/server/src/trace.test.ts` /
-`apps/server/src/agent-service.test.ts` for automated evidence covering both
-a successful run and a failing run.
+**The problem.** The Starter Kit records the *result* of an Agent Run — status,
+output, error — and nothing about how it got there. Codex reasons, runs
+commands, and edits files across many steps inside a disposable container whose
+stdout is parsed for one final message and then discarded. When a Run fails, the
+operator sees `Codex exited with code 1: boom` and cannot tell which step
+failed, what the Agent had already changed, or what the Run cost.
+
+**The capability.** Every Run now emits a correlated, redacted trace — a tree of
+spans covering the Run, the Runtime invocation, and each individual Codex event
+— written by the control plane in the same transaction that transitions the Run
+to a terminal state. A failed Run keeps the steps observed *before* the failure,
+so the failing step is locatable rather than merely reported.
+
+**Where it runs.** `AgentService.executeRun` (Fastify control plane) owns the
+trace; `apps/server/src/trace.ts` shapes and redacts it; `GET
+/api/runs/:id/trace` serves it behind the same auth hook as every other route.
+The `AgentRunner` interface stays thin — a runner just returns the raw events it
+observed.
+
+**In the browser.** **View trace** on any terminal Run opens the span tree with
+status, duration, token total, sandbox mode, and container engine; **Failing
+steps** filters to errored spans; **Run history** lists past Runs with a status
+filter; **Export JSON** hands the trace to an external tool.
+
+Read [docs/GLASS_BOX.md](docs/GLASS_BOX.md) for the design, trust boundary,
+retention policy, three-minute demo script, automated-evidence map, and known
+limitations.
 
 ## Screenshots
 
@@ -216,6 +236,8 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
+| `TRACE_MAX_EVENT_SPANS_PER_RUN` | `500` | Event spans kept per Run before truncation. |
+| `TRACE_RETENTION_RUNS` | `200` | Runs whose traces are retained, oldest dropped whole. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
@@ -250,6 +272,7 @@ docker compose config
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Glass Box middleware: design, demo, and limitations](docs/GLASS_BOX.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)

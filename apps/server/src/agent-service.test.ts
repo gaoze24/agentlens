@@ -3,6 +3,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
+import { attachRunnerEvents } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RawCodexEvent, RunnerRequest, RunnerResult } from "./types.js";
@@ -133,6 +134,82 @@ describe("Agent lifecycle", () => {
     const process = spans.find((span) => span.parentSpanId === root?.id);
     expect(process?.status).toBe("error");
     expect(process?.errorMessage).toContain("boom");
+  });
+
+  it("keeps the steps observed before a failure so the failing step is locatable", async () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:00.100Z",
+        event: {
+          type: "item.completed",
+          item: { type: "command_execution", command: "npm test" },
+        },
+      },
+      {
+        observedAt: "2026-01-01T00:00:00.200Z",
+        event: { type: "error", message: "tests failed" },
+      },
+    ];
+    const runner: AgentRunner = {
+      run: async () => {
+        throw attachRunnerEvents(new Error("Codex exited with code 1: tests failed"), events);
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Partial" });
+    const { run } = await service.sendMessage(agent.id, "run the tests");
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+
+    const spans = service.getTrace(run.id);
+    expect(spans.map((span) => span.category)).toContain("tool.call");
+    const failingStep = spans.find((span) => span.category === "runtime.error");
+    expect(failingStep?.status).toBe("error");
+    expect(failingStep?.errorMessage).toContain("tests failed");
+  });
+
+  it("redacts the Ark key and bearer tokens from the stored Run and Agent error", async () => {
+    const runner: AgentRunner = {
+      run: async () => {
+        throw new Error(
+          "Codex exited with code 1: key=test-key header=Authorization: Bearer abc.def-123",
+        );
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Leaky" });
+    const { run } = await service.sendMessage(agent.id, "leak the key");
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+
+    const failed = service.getRun(run.id);
+    expect(failed.error).not.toContain("test-key");
+    expect(failed.error).not.toContain("abc.def-123");
+    expect(failed.error).toContain("[REDACTED]");
+    expect(service.getAgent(agent.id).lastError).not.toContain("test-key");
+  });
+
+  it("removes an Agent's spans when the Agent is deleted", async () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: new Date().toISOString(),
+        event: { type: "item.completed", item: { type: "agent_message", text: "hi" } },
+      },
+    ];
+    const service = await makeService({
+      run: async () => ({ output: "done", threadId: "t", usage: null, events }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Ephemeral" });
+    const { run } = await service.sendMessage(agent.id, "hello");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(service.getTrace(run.id).length).toBeGreaterThan(0);
+
+    await service.deleteAgent(agent.id);
+    expect(() => service.getTrace(run.id)).toThrowError(/Run not found/);
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {

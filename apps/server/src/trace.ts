@@ -164,12 +164,46 @@ function messageForErrorEvent(event: Record<string, unknown>, secrets: readonly 
   return redactSecrets(raw, secrets);
 }
 
+/**
+ * Cap the number of event spans one Run may contribute. A long Codex turn can
+ * emit thousands of JSON events; keeping every one would let a single Run
+ * dominate the JSON store. The most recent events are kept because the failing
+ * step is normally at the tail, and a notice span records what was dropped.
+ */
+function truncationSpan(
+  context: { runId: string; agentId: string; parentSpanId: string },
+  droppedCount: number,
+  observedAt: string,
+): TraceSpan {
+  return {
+    id: randomUUID(),
+    runId: context.runId,
+    agentId: context.agentId,
+    parentSpanId: context.parentSpanId,
+    category: "trace.truncated",
+    name: "trace.truncated",
+    status: "ok",
+    startedAt: observedAt,
+    completedAt: observedAt,
+    durationMs: 0,
+    attributes: { droppedEventCount: droppedCount },
+    errorMessage: null,
+  };
+}
+
 export function buildEventSpans(
   events: readonly RawCodexEvent[],
   context: { runId: string; agentId: string; parentSpanId: string },
   secrets: readonly string[],
+  maxEventSpans = Number.POSITIVE_INFINITY,
 ): TraceSpan[] {
-  return events.map((raw) => {
+  const dropped = Math.max(0, events.length - maxEventSpans);
+  const kept = dropped > 0 ? events.slice(dropped) : events;
+  const notice =
+    dropped > 0
+      ? [truncationSpan(context, dropped, events[0]?.observedAt ?? new Date().toISOString())]
+      : [];
+  return notice.concat(kept.map((raw) => {
     const category = categoryForEvent(raw.event);
     const isError = category === "runtime.error";
     return {
@@ -186,5 +220,30 @@ export function buildEventSpans(
       attributes: redactAttributes(raw.event, secrets),
       errorMessage: isError ? messageForErrorEvent(raw.event, secrets) : null,
     } satisfies TraceSpan;
-  });
+  }));
+}
+
+/**
+ * Retention policy: keep spans for the most recent `maxRuns` Runs and discard
+ * the rest. Spans are grouped by Run so a retained trace is never left with
+ * half its tree missing.
+ */
+export function pruneSpans(spans: readonly TraceSpan[], maxRuns: number): TraceSpan[] {
+  const latestStartByRun = new Map<string, string>();
+  for (const span of spans) {
+    const current = latestStartByRun.get(span.runId);
+    if (current === undefined || span.startedAt > current) {
+      latestStartByRun.set(span.runId, span.startedAt);
+    }
+  }
+  if (latestStartByRun.size <= maxRuns) {
+    return [...spans];
+  }
+  const retained = new Set(
+    [...latestStartByRun.entries()]
+      .sort((left, right) => right[1].localeCompare(left[1]))
+      .slice(0, maxRuns)
+      .map(([runId]) => runId),
+  );
+  return spans.filter((span) => retained.has(span.runId));
 }
