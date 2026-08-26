@@ -43,7 +43,7 @@ export interface AgentRun {
   createdAt: string;
 }
 
-export type SpanStatus = "ok" | "error" | "cancelled";
+export type SpanStatus = "running" | "ok" | "error" | "cancelled";
 
 export interface TraceSpan {
   id: string;
@@ -97,6 +97,11 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  /**
+   * Invoked as each Codex JSON event is observed, so the control plane can
+   * persist spans while the turn is still running instead of only at the end.
+   */
+  onEvent?: ((event: RawCodexEvent) => void) | undefined;
 }
 
 export interface AgentRunner {

@@ -1048,6 +1048,20 @@ textarea:focus {
   background: #f7ecd2;
 }
 
+.span-status-running {
+  color: #3d4fa1;
+  background: #e0e5f8;
+}
+
+.span-status-running .status-dot {
+  animation: span-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes span-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 .span-error {
   margin: 4px 0 0 2px;
   color: #9e4545;

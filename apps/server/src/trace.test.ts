@@ -60,7 +60,8 @@ describe("span construction", () => {
     });
     expect(span.parentSpanId).toBeNull();
     expect(span.category).toBe("orchestration");
-    expect(span.status).toBe("ok");
+    expect(span.status).toBe("running");
+    expect(span.completedAt).toBeNull();
   });
 
   it("links a process span to its parent run span", () => {
@@ -253,5 +254,77 @@ describe("pruneSpans", () => {
     const pruned = pruneSpans(spans, 1);
     expect(pruned).toHaveLength(2);
     expect(pruned.every((span) => span.runId === "new")).toBe(true);
+  });
+});
+
+describe("credential pattern redaction", () => {
+  const cases: [string, string][] = [
+    ["OpenAI-style key", "sk-abcdefghijklmnopqrstuvwxyz012345"],
+    ["GitHub token", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"],
+    ["GitHub fine-grained token", "github_pat_abcdefghijklmnopqrstuv0123456789"],
+    ["Slack token", "xoxb-1234567890-abcdefghijkl"],
+    ["Google API key", "AIzaSyA1234567890abcdefghijklmnopqrstuvw"],
+    ["AWS access key id", "AKIAIOSFODNN7EXAMPLE"],
+  ];
+
+  it.each(cases)("redacts a leaked %s the process was never told about", (_label, secret) => {
+    const result = redactSecrets("the agent printed " + secret + " to stdout", []);
+    expect(result).not.toContain(secret);
+    expect(result).toContain("[REDACTED]");
+  });
+
+  it("redacts a PEM private key block including its body", () => {
+    const key = [
+      "-----BEGIN RSA PRIVATE KEY-----",
+      "MIIEowIBAAKCAQEAxGxQ0000000000000000000000000",
+      "-----END RSA PRIVATE KEY-----",
+    ].join("\n");
+    const result = redactSecrets("found key:\n" + key, []);
+    expect(result).not.toContain("MIIEowIBAAKCAQEA");
+    expect(result).toContain("[REDACTED PRIVATE KEY]");
+  });
+
+  it("redacts the value of a sensitive assignment but keeps its name", () => {
+    const result = redactSecrets('DB_PASSWORD="hunter2" and api_key=abcd1234', []);
+    expect(result).not.toContain("hunter2");
+    expect(result).not.toContain("abcd1234");
+    expect(result).toContain("PASSWORD");
+    expect(result).toContain("api_key");
+  });
+
+  it("redacts a Basic authorization header", () => {
+    const result = redactSecrets("Authorization: Basic dXNlcjpwYXNzd29yZA==", []);
+    expect(result).not.toContain("dXNlcjpwYXNzd29yZA");
+    expect(result).toBe("Authorization: Basic [REDACTED]");
+  });
+
+  it("leaves ordinary prose untouched", () => {
+    const prose = "Ran the test suite and 3 assertions passed.";
+    expect(redactSecrets(prose, [])).toBe(prose);
+  });
+});
+
+describe("capture level", () => {
+  const longFile = "x".repeat(3_000);
+
+  it("clips payload strings hard in summary capture", () => {
+    const result = redactAttributes({ item: { contents: longFile } }, [], "summary");
+    const contents = (result.item as { contents: string }).contents;
+    expect(contents.length).toBeLessThan(400);
+    expect(contents.endsWith("…[truncated]")).toBe(true);
+  });
+
+  it("keeps the larger payload budget in full capture", () => {
+    const result = redactAttributes({ item: { contents: longFile } }, [], "full");
+    expect((result.item as { contents: string }).contents).toHaveLength(3_000);
+  });
+
+  it("still redacts secrets in summary capture", () => {
+    const result = redactAttributes(
+      { item: { command: "curl -H 'Authorization: Bearer " + SECRET + "'" } },
+      [SECRET],
+      "summary",
+    );
+    expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 });

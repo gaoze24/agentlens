@@ -46,10 +46,16 @@ flowchart TD
 ## Boundary and ownership
 
 - **Who owns the decision.** `AgentService.executeRun` (the control plane) owns
-  the trace. It opens the root span before the Runtime is invoked and closes it
-  in both the success and failure paths, in the *same* `store.mutate`
-  transaction that transitions `AgentRun.status`. A Run can therefore never
-  reach a terminal state without its trace being written.
+  the trace. It **persists** the root span as `running` before the Runtime is
+  invoked, streams event spans as Codex emits them, and closes every span in the
+  *same* `store.mutate` transaction that transitions `AgentRun.status`. A Run
+  can therefore never reach a terminal state without its trace being written,
+  and a Run that is still executing is already observable.
+- **The control plane, not the runner, owns what was observed.** Events arrive
+  through an `onEvent` callback on `RunnerRequest`; `AgentService` records them
+  itself and treats its own record as authoritative at finalisation, falling
+  back to `RunnerResult.events` only for a runner that does not stream. A
+  runner cannot silently erase a trace by reporting no events.
 - **What crosses the boundary.** The `AgentRunner` interface stays thin: a
   runner returns `RunnerResult.events` (raw Codex JSON lines plus an observation
   timestamp) and knows nothing about spans. Shaping raw events into spans lives
@@ -63,13 +69,44 @@ flowchart TD
 - **Trace ingestion never fails a Run.** Span construction is pure and
   synchronous; if the Codex event stream contains a type the mapper does not
   recognize, it is stored as `unknown.<type>` instead of being dropped or
-  throwing.
+  throwing. Streamed writes are batched every 750 ms rather than one store
+  write per event, and a failed flush is swallowed so instrumentation can never
+  take down the Run it is instrumenting.
+
+## Span lifecycle and crash recovery
+
+A span is written twice: open, then closed.
+
+| Phase | Root span | Process span | Event spans |
+| --- | --- | --- | --- |
+| Run accepted | `running`, `completedAt: null` | — | — |
+| Runtime invoked | `running` | `running` | stream in, batched |
+| Terminal state | `ok` / `error` / `cancelled` | same | replaced by the authoritative capped set |
+| Process killed mid-Run | `cancelled` on restart | `cancelled` on restart | retained as observed |
+
+If the server dies mid-Run, `initialize()` force-cancels the orphaned Run *and*
+closes every span still marked `running`, stamping
+`"Server restarted while this run was active"`. Without that, an interrupted Run
+would either show no trace at all or leave spans `running` forever — which is
+precisely the failure an observability capability exists to explain.
 
 ## Redaction and trust boundary
 
-`redactSecrets` strips the configured Ark API key and any `Bearer <token>`
-pattern, and truncates oversized strings, before anything is written to disk.
-It is applied to:
+`redactSecrets` runs before anything is written to disk. It strips, in order:
+
+1. every configured secret (the Ark API key) by exact match;
+2. credential *shapes* the process was never told about — `Bearer` and `Basic`
+   authorization headers, `sk-`, `ghp_`/`gho_`/`ghs_`/`github_pat_`, `xoxb-`,
+   `AIza`, AWS `AKIA`/`ASIA` key IDs, PEM private-key blocks including their
+   body, and the value of any `*password`/`*secret`/`*api_key`/`*token`
+   assignment (the name is kept, the value is not);
+3. anything left over the length budget for the active capture level.
+
+Step 2 matters because the Agent can *discover* a credential inside its own
+workspace and echo it to stdout, where exact-match redaction against the Ark key
+would never see it.
+
+Redaction is applied to:
 
 - every span attribute, recursively through nested objects and arrays;
 - every span error message;
@@ -87,6 +124,7 @@ Traces are bounded on two axes so one Agent cannot exhaust the JSON store:
 
 | Control | Default | Behaviour |
 | --- | --- | --- |
+| `TRACE_CAPTURE_LEVEL` | `full` | `summary` clips every payload string to 256 characters, so a `file_change` event cannot carry a whole file into the trace store. |
 | `TRACE_MAX_EVENT_SPANS_PER_RUN` | 500 | Keeps the most recent events for a Run (the failing step is normally at the tail) and records the dropped count in a `trace.truncated` span. |
 | `TRACE_RETENTION_RUNS` | 200 | Keeps the newest N Runs, discarding older Runs **whole**, so a retained trace is never left with half its tree missing. |
 
@@ -95,23 +133,59 @@ the existing workspace-archival policy.
 
 ## Demo script (three minutes)
 
+The failure case below is deliberately an **Agent-caused failure**, not a
+platform misconfiguration. Breaking `ARK_MODEL` would fail the Run before the
+Agent does any work, producing a two-span trace that demonstrates nothing. The
+point of this middleware is finding a failing step *among real work*, so the
+demo has to produce real work first.
+
 1. **Baseline.** `npm run poc`, open <http://localhost:3000>, create an Agent,
    and show its `ready` lifecycle state.
 2. **Normal case.** Send `Create a TypeScript hello-world CLI, add a test, and
    run it.` Wait for the Run to complete — a real model call, real file writes,
    and a real command execution inside the disposable container.
-3. **Evidence.** Select **View trace**. Walk the tree: root → process →
-   individual `tool.call` and `model.message` spans. Point out the duration,
-   token total, sandbox mode, and container engine in the summary bar. Expand a
-   `tool.call` span to show the redacted payload.
-4. **Failure case.** Stop the Ark endpoint or set an invalid `ARK_MODEL`, then
-   send another task. The Run fails.
-5. **Locate the failing step.** Open the trace, press **Failing steps** to
-   filter to `status: error`, and show that the failing span carries the
-   redacted Codex error while the preceding steps are still visible.
-6. **Still controllable.** Close the trace, open **Run history**, filter by
+3. **Live evidence.** While the Run is still going, select **View trace**: the
+   root and process spans are already `running` and event spans stream in as
+   Codex works. This is the trace being written, not a report assembled
+   afterwards.
+4. **Completed evidence.** Once the Run finishes, reopen the trace. Walk the
+   tree: root → process → individual `tool.call` and `model.message` spans.
+   Point out duration, token total, sandbox mode, and container engine in the
+   summary bar. Expand a `tool.call` span to show the redacted payload.
+5. **Failure case.** Send `Add a second test that asserts 1 === 2 so the suite
+   fails, then run the whole suite and report the result.` The Agent reasons,
+   edits a file, runs the suite, and the command exits non-zero — a Run that
+   fails *after* doing real work.
+6. **Locate the failing step.** Open the trace and press **Failing steps** to
+   filter to `status: error`. The failing `command_execution` is isolated out of
+   a dozen successful steps, carrying its redacted stderr — while the preceding
+   `file_change` spans still show exactly what the Agent changed before it
+   broke.
+7. **Still controllable.** Close the trace, open **Run history**, filter by
    `failed`, and confirm the Agent returns to `ready` and accepts a new task.
-   Optionally press **Export JSON** to hand the trace to an external tool.
+   Press **Export JSON** to hand the trace to an external tool.
+
+**No Ark credentials?** Run `npm run demo:seed` and restart. It loads two
+finished Runs — one successful, one failing mid-execution — so every step above
+except 3 and 5 can be shown without a model endpoint. See
+[Seeded demo data](#seeded-demo-data).
+
+## Seeded demo data
+
+`npm run demo:seed` writes a fixture Agent with two complete traces into the
+configured `APP_DATA_DIR`, so a reviewer can inspect the middleware without a
+BytePlus ModelArk key. It refuses to overwrite a store that already holds
+Agents unless `--force` is passed.
+
+```bash
+npm run demo:seed          # seed into the default .data/ store
+npm run demo:seed -- --force   # replace an existing store
+```
+
+The fixture contains a successful Run (reasoning → file writes → passing
+command) and a failing Run (reasoning → file write → failing command → error),
+including a span whose payload carries planted secrets already replaced with
+`[REDACTED]`, so redaction is visible in the seeded data too.
 
 ## Automated evidence
 
@@ -124,15 +198,21 @@ the existing workspace-archival policy.
 | Spans are deleted with their Agent | `agent-service.test.ts` — "removes an Agent's spans" |
 | Redaction across nested payloads, arrays, and batches | `trace.test.ts` — `redactSecrets`, `redactAttributes`, `buildEventSpans` |
 | Event cap and Run-level retention | `trace.test.ts` — "event span capping", `pruneSpans` |
+| Trace is readable while a Run executes | `agent-service.test.ts` — "exposes an open trace while the Run is still executing" |
+| Streamed spans are not duplicated at finalisation | `agent-service.test.ts` — "does not duplicate spans that were streamed" |
+| A streaming runner reporting no events keeps its trace | `agent-service.test.ts` — "keeps streamed spans when the runner reports no events" |
+| Crash leaves no span stuck open | `agent-service.test.ts` — "closes spans left open by a crash when the server restarts" |
+| Unconfigured credential shapes are redacted | `trace.test.ts` — "credential pattern redaction" |
+| Capture level bounds stored payloads | `trace.test.ts` — "capture level" |
 
 Run everything with `npm run check`.
 
 ## Limitations
 
-- **Trace is written at Run completion, not streamed.** Spans for a Run appear
-  once it reaches a terminal state; there is no live trace during a running
-  turn. The span model already supports streaming — the constraint is the
-  single-writer JSON store, not the schema.
+- **Streaming is batched, not real-time.** Event spans are flushed every 750 ms
+  to avoid rewriting the whole JSON store per event, and the browser polls the
+  trace every 1.2 s, so the live view lags a Run by up to ~2 s. A push transport
+  (SSE or WebSocket) would remove both delays; the span model does not change.
 - **Single-process JSON store.** Inherited from the Starter Kit. Spans share
   its one-process, whole-file-rewrite limitation; a real deployment would send
   spans to an OTLP collector instead. The span shape (id, parent, category,
@@ -141,9 +221,11 @@ Run everything with `npm run check`.
   plane read the JSON line, not when Codex emitted it, so event spans are
   point-in-time (`durationMs: 0`) rather than true intervals. Codex does not
   emit paired start/end events for every item type.
-- **Redaction is string-matching.** It covers the configured Ark key and bearer
-  patterns. A secret the Agent itself invents inside its workspace and echoes to
-  stdout would not be recognized.
+- **Redaction is pattern-matching.** It covers configured secrets plus the
+  credential shapes listed above. A secret in a shape not on that list, or one
+  that is base64/hex-encoded before being printed, would not be recognized.
+  `TRACE_CAPTURE_LEVEL=summary` is the blunt mitigation: it clips payloads
+  before they can carry much of anything.
 - **No trace-level access control.** The POC is single-user; trace access is the
   same shared bearer token as the rest of the API. Per-principal trace
   authorization belongs with an identity capability, which this team did not

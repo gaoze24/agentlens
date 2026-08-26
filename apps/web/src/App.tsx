@@ -114,23 +114,45 @@ function TracePanel({
   const [error, setError] = useState<string | null>(null);
   const [errorsOnly, setErrorsOnly] = useState(false);
 
+  const live = run !== null && ["queued", "running"].includes(run.status);
+
   useEffect(() => {
     let active = true;
     setSpans(null);
     setError(null);
     setErrorsOnly(false);
-    api
-      .trace(runId)
-      .then((result) => {
-        if (active) setSpans(result.spans);
-      })
-      .catch((reason) => {
-        if (active) setError(reason instanceof Error ? reason.message : String(reason));
-      });
+    const load = () =>
+      api
+        .trace(runId)
+        .then((result) => {
+          if (active) setSpans(result.spans);
+        })
+        .catch((reason) => {
+          if (active) setError(reason instanceof Error ? reason.message : String(reason));
+        });
+    void load();
     return () => {
       active = false;
     };
   }, [runId]);
+
+  // While the Run is still executing, keep pulling the growing trace.
+  useEffect(() => {
+    if (!live) return;
+    let active = true;
+    const timer = window.setInterval(() => {
+      void api
+        .trace(runId)
+        .then((result) => {
+          if (active) setSpans(result.spans);
+        })
+        .catch(() => undefined);
+    }, 1_200);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [live, runId]);
 
   const childrenBySpanId = useMemo(() => buildSpanChildren(spans ?? []), [spans]);
   const roots = childrenBySpanId.get(null) ?? [];
@@ -161,7 +183,11 @@ function TracePanel({
           <div>
             <span className="eyebrow">Run diagnostics</span>
             <h2>Trace</h2>
-            <p>Correlated Run and step events. Secrets are redacted before storage.</p>
+              <p>
+              {live
+                ? "Streaming: spans appear as the Run executes."
+                : "Correlated Run and step events. Secrets are redacted before storage."}
+            </p>
           </div>
           <button type="button" onClick={onClose}>×</button>
         </div>
@@ -177,7 +203,9 @@ function TracePanel({
             </div>
             <div>
               <span className="trace-summary-label">Duration</span>
-              <strong>{formatDuration(rootSpan?.durationMs ?? null)}</strong>
+              <strong>
+                {live ? "running…" : formatDuration(rootSpan?.durationMs ?? null)}
+              </strong>
             </div>
             <div>
               <span className="trace-summary-label">Spans</span>
@@ -290,7 +318,6 @@ function RunsPanel({
                 type="button"
                 className="run-row"
                 onClick={() => onSelectRun(run)}
-                disabled={["queued", "running"].includes(run.status)}
               >
                 <span className={"span-status span-status-" + statusToSpanStatus(run.status)}>
                   <span className="status-dot" />
@@ -310,6 +337,7 @@ function RunsPanel({
 function statusToSpanStatus(status: AgentRun["status"]): string {
   if (status === "failed") return "error";
   if (status === "cancelled") return "cancelled";
+  if (status === "queued" || status === "running") return "running";
   return "ok";
 }
 
@@ -831,13 +859,15 @@ export default function App() {
                   </article>
                 )}
                 <div className="trace-entry">
-                  {activeRun && ["completed", "failed", "cancelled"].includes(activeRun.status) && (
+                  {activeRun && (
                     <button
                       type="button"
                       className="button button-ghost"
                       onClick={() => setTraceRun(activeRun)}
                     >
-                      View trace
+                      {["queued", "running"].includes(activeRun.status)
+                        ? "View live trace"
+                        : "View trace"}
                     </button>
                   )}
                   {runs.length > 0 && (
@@ -992,7 +1022,7 @@ export default function App() {
       {traceRun && (
         <TracePanel
           runId={traceRun.id}
-          run={traceRun}
+          run={activeRun?.id === traceRun.id ? activeRun : traceRun}
           onClose={() => setTraceRun(null)}
         />
       )}

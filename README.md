@@ -33,10 +33,15 @@ trace; `apps/server/src/trace.ts` shapes and redacts it; `GET
 The `AgentRunner` interface stays thin — a runner just returns the raw events it
 observed.
 
-**In the browser.** **View trace** on any terminal Run opens the span tree with
-status, duration, token total, sandbox mode, and container engine; **Failing
-steps** filters to errored spans; **Run history** lists past Runs with a status
-filter; **Export JSON** hands the trace to an external tool.
+**In the browser.** **View live trace** opens the span tree *while the Run is
+still executing* — spans stream in as Codex works. It shows status, duration,
+token total, sandbox mode, and container engine; **Failing steps** filters to
+errored spans; **Run history** lists past Runs with a status filter; **Export
+JSON** hands the trace to an external tool.
+
+**No Ark credentials?** `npm run demo:seed` loads a fixture Agent with one
+successful and one failing Run, so the middleware is inspectable without a model
+endpoint.
 
 Read [docs/GLASS_BOX.md](docs/GLASS_BOX.md) for the design, trust boundary,
 retention policy, three-minute demo script, automated-evidence map, and known
@@ -236,6 +241,7 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
+| `TRACE_CAPTURE_LEVEL` | `full` | `summary` clips trace payload strings to 256 characters. |
 | `TRACE_MAX_EVENT_SPANS_PER_RUN` | `500` | Event spans kept per Run before truncation. |
 | `TRACE_RETENTION_RUNS` | `200` | Runs whose traces are retained, oldest dropped whole. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |

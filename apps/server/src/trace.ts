@@ -2,33 +2,81 @@ import { randomUUID } from "node:crypto";
 import type { RawCodexEvent, SpanStatus, TraceSpan } from "./types.js";
 
 const MAX_STRING_LENGTH = 4_096;
+const SUMMARY_STRING_LENGTH = 256;
 const TRUNCATION_SUFFIX = "…[truncated]";
-const BEARER_PATTERN = /Bearer\s+[A-Za-z0-9._~+/-]+=*/gi;
 
-export function redactSecrets(value: string, secrets: readonly string[]): string {
+/**
+ * Credential shapes worth catching even when the value is not one of the
+ * secrets this process was configured with. An Agent can discover a credential
+ * inside its own workspace and echo it to stdout, where exact-match redaction
+ * against the Ark key would never see it.
+ */
+const CREDENTIAL_PATTERNS: readonly { pattern: RegExp; replacement: string }[] = [
+  { pattern: /Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, replacement: "Bearer [REDACTED]" },
+  { pattern: /Basic\s+[A-Za-z0-9+/]{8,}={0,2}/gi, replacement: "Basic [REDACTED]" },
+  // OpenAI-style, GitHub, Slack, Google, and AWS access key IDs.
+  { pattern: /\bsk-[A-Za-z0-9_-]{16,}/g, replacement: "[REDACTED]" },
+  { pattern: /\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{16,}/g, replacement: "[REDACTED]" },
+  { pattern: /\bgithub_pat_[A-Za-z0-9_]{20,}/g, replacement: "[REDACTED]" },
+  { pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, replacement: "[REDACTED]" },
+  { pattern: /\bAIza[A-Za-z0-9_-]{30,}/g, replacement: "[REDACTED]" },
+  { pattern: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, replacement: "[REDACTED]" },
+  // PEM private key blocks, including the body.
+  {
+    pattern: /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g,
+    replacement: "[REDACTED PRIVATE KEY]",
+  },
+  // key=value assignments for obviously sensitive names.
+  {
+    pattern:
+      /([A-Za-z0-9_.-]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token))(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+    replacement: "$1$2[REDACTED]",
+  },
+];
+
+export function redactSecrets(
+  value: string,
+  secrets: readonly string[],
+  maxLength = MAX_STRING_LENGTH,
+): string {
   let result = value;
   for (const secret of secrets) {
     if (!secret) continue;
     result = result.split(secret).join("[REDACTED]");
   }
-  result = result.replace(BEARER_PATTERN, "Bearer [REDACTED]");
-  if (result.length > MAX_STRING_LENGTH) {
-    result = result.slice(0, MAX_STRING_LENGTH) + TRUNCATION_SUFFIX;
+  for (const { pattern, replacement } of CREDENTIAL_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
+  if (result.length > maxLength) {
+    result = result.slice(0, maxLength) + TRUNCATION_SUFFIX;
   }
   return result;
 }
 
-function redactValue(value: unknown, secrets: readonly string[]): unknown {
+export type TraceCaptureLevel = "summary" | "full";
+
+/**
+ * In `summary` capture, payload strings are clipped hard. A `file_change`
+ * event can otherwise carry the whole contents of an edited file into the
+ * trace store, which is neither a "safely summarized" record nor something an
+ * operator wants persisted by default.
+ */
+function redactValue(
+  value: unknown,
+  secrets: readonly string[],
+  captureLevel: TraceCaptureLevel,
+): unknown {
+  const maxLength = captureLevel === "summary" ? SUMMARY_STRING_LENGTH : MAX_STRING_LENGTH;
   if (typeof value === "string") {
-    return redactSecrets(value, secrets);
+    return redactSecrets(value, secrets, maxLength);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => redactValue(item, secrets));
+    return value.map((item) => redactValue(item, secrets, captureLevel));
   }
   if (value && typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, nested] of Object.entries(value)) {
-      result[key] = redactValue(nested, secrets);
+      result[key] = redactValue(nested, secrets, captureLevel);
     }
     return result;
   }
@@ -38,8 +86,9 @@ function redactValue(value: unknown, secrets: readonly string[]): unknown {
 export function redactAttributes(
   attributes: Record<string, unknown>,
   secrets: readonly string[],
+  captureLevel: TraceCaptureLevel = "full",
 ): Record<string, unknown> {
-  return redactValue(attributes, secrets) as Record<string, unknown>;
+  return redactValue(attributes, secrets, captureLevel) as Record<string, unknown>;
 }
 
 function durationBetween(startedAt: string, completedAt: string): number | null {
@@ -83,7 +132,7 @@ export function buildRunSpan(input: BuildRunSpanInput): TraceSpan {
     parentSpanId: null,
     category: "orchestration",
     name: "run.orchestration",
-    status: "ok",
+    status: "running",
     startedAt: input.startedAt,
     completedAt: null,
     durationMs: null,
@@ -111,7 +160,7 @@ export function buildProcessSpan(input: BuildProcessSpanInput): TraceSpan {
     category: "runtime.process",
     name:
       input.runtimeProvider === "container" ? "runtime.container" : "runtime.local-process",
-    status: "ok",
+    status: "running",
     startedAt: input.startedAt,
     completedAt: null,
     durationMs: null,
@@ -196,6 +245,7 @@ export function buildEventSpans(
   context: { runId: string; agentId: string; parentSpanId: string },
   secrets: readonly string[],
   maxEventSpans = Number.POSITIVE_INFINITY,
+  captureLevel: TraceCaptureLevel = "full",
 ): TraceSpan[] {
   const dropped = Math.max(0, events.length - maxEventSpans);
   const kept = dropped > 0 ? events.slice(dropped) : events;
@@ -217,7 +267,7 @@ export function buildEventSpans(
       startedAt: raw.observedAt,
       completedAt: raw.observedAt,
       durationMs: 0,
-      attributes: redactAttributes(raw.event, secrets),
+      attributes: redactAttributes(raw.event, secrets, captureLevel),
       errorMessage: isError ? messageForErrorEvent(raw.event, secrets) : null,
     } satisfies TraceSpan;
   }));

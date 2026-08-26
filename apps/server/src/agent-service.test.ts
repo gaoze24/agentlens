@@ -212,6 +212,139 @@ describe("Agent lifecycle", () => {
     expect(() => service.getTrace(run.id)).toThrowError(/Run not found/);
   });
 
+  it("exposes an open trace while the Run is still executing", async () => {
+    let release!: (result: RunnerResult) => void;
+    const pending = new Promise<RunnerResult>((resolve) => {
+      release = resolve;
+    });
+    let emit!: (event: RawCodexEvent) => void;
+    const service = await makeService({
+      run: (request) => {
+        emit = (event) => request.onEvent?.(event);
+        return pending;
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Live" });
+    const { run } = await service.sendMessage(agent.id, "take your time");
+
+    // Root and process spans exist before the Runtime has returned anything.
+    await expect.poll(() => service.getTrace(run.id).length).toBeGreaterThanOrEqual(2);
+    const open = service.getTrace(run.id);
+    expect(open.every((span) => span.status === "running")).toBe(true);
+    expect(open.every((span) => span.completedAt === null)).toBe(true);
+
+    // Events streamed mid-turn become spans without waiting for completion.
+    emit({
+      observedAt: new Date().toISOString(),
+      event: {
+        type: "item.completed",
+        item: { type: "command_execution", command: "npm test" },
+      },
+    });
+    await expect
+      .poll(() => service.getTrace(run.id).some((span) => span.category === "tool.call"))
+      .toBe(true);
+
+    release({ output: "done", threadId: "thread", usage: null, events: [] });
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    const closed = service.getTrace(run.id);
+    expect(closed.some((span) => span.status === "running")).toBe(false);
+  });
+
+  it("does not duplicate spans that were streamed and then finalised", async () => {
+    const event: RawCodexEvent = {
+      observedAt: new Date().toISOString(),
+      event: { type: "item.completed", item: { type: "agent_message", text: "hi" } },
+    };
+    const service = await makeService({
+      run: async (request) => {
+        request.onEvent?.(event);
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        return { output: "done", threadId: "t", usage: null, events: [event] };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Once" });
+    const { run } = await service.sendMessage(agent.id, "say hi");
+    await expect.poll(() => service.getRun(run.id).status, { timeout: 5_000 }).toBe("completed");
+
+    const spans = service.getTrace(run.id);
+    expect(spans.filter((span) => span.category === "model.message")).toHaveLength(1);
+    expect(spans).toHaveLength(3);
+  });
+
+  it("keeps streamed spans when the runner reports no events at completion", async () => {
+    // A runner may stream events and return none; finalisation must not wipe
+    // the trace the control plane already observed.
+    const service = await makeService({
+      run: async (request) => {
+        request.onEvent?.({
+          observedAt: new Date().toISOString(),
+          event: {
+            type: "item.completed",
+            item: { type: "command_execution", command: "npm test" },
+          },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        return { output: "done", threadId: "t", usage: null, events: [] };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "StreamOnly" });
+    const { run } = await service.sendMessage(agent.id, "build it");
+    await expect.poll(() => service.getRun(run.id).status, { timeout: 5_000 }).toBe("completed");
+
+    const spans = service.getTrace(run.id);
+    expect(spans.filter((span) => span.category === "tool.call")).toHaveLength(1);
+    expect(spans.some((span) => span.status === "running")).toBe(false);
+  });
+
+  it("closes spans left open by a crash when the server restarts", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-restart-"));
+    temporaryDirectories.push(root);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const storePath = path.join(root, "data", "launchpad.json");
+    const makeInstance = () =>
+      new AgentService(
+        config,
+        new JsonStore(storePath),
+        new WorkspaceManager(path.join(root, "workspaces")),
+        {
+          run: () => new Promise<RunnerResult>(() => undefined),
+          cancel: async () => false,
+          isAvailable: async () => true,
+        },
+      );
+
+    const crashed = makeInstance();
+    await crashed.initialize();
+    const agent = await crashed.createAgent({ name: "Interrupted" });
+    const { run } = await crashed.sendMessage(agent.id, "never finishes");
+    await expect.poll(() => crashed.getTrace(run.id).length).toBeGreaterThanOrEqual(2);
+
+    // A second instance over the same store stands in for a process restart.
+    const restarted = makeInstance();
+    await restarted.initialize();
+
+    expect(restarted.getRun(run.id).status).toBe("cancelled");
+    const spans = restarted.getTrace(run.id);
+    expect(spans.length).toBeGreaterThanOrEqual(2);
+    expect(spans.every((span) => span.status === "cancelled")).toBe(true);
+    expect(spans.every((span) => span.completedAt !== null)).toBe(true);
+    expect(spans[0]?.errorMessage).toContain("Server restarted");
+  });
+
   it("atomically accepts only one concurrent run per Agent", async () => {
     let finish!: (result: RunnerResult) => void;
     const pending = new Promise<RunnerResult>((resolve) => {
