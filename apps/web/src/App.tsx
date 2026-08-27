@@ -72,7 +72,9 @@ function SpanNode({
           {span.durationMs !== null ? span.durationMs + " ms" : "—"}
         </span>
       </button>
-      {span.errorMessage && <div className="span-error">{span.errorMessage}</div>}
+      {span.errorMessage && (
+        <div className={"span-error span-error-" + span.status}>{span.errorMessage}</div>
+      )}
       {expanded && (
         <pre className="span-attributes">{JSON.stringify(span.attributes, null, 2)}</pre>
       )}

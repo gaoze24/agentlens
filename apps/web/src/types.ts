@@ -38,7 +38,7 @@ export interface AgentRun {
   createdAt: string;
 }
 
-export type SpanStatus = "ok" | "error" | "cancelled";
+export type SpanStatus = "ok" | "warning" | "error" | "cancelled";
 
 export interface TraceSpan {
   id: string;

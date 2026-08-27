@@ -141,7 +141,7 @@ describe("buildEventSpans", () => {
     expect(spans[0]?.errorMessage).not.toContain(SECRET);
   });
 
-  it("flags a nested item.type: error as a failed span with its message extracted", () => {
+  it("downgrades the known model metadata fallback event to a warning", () => {
     const events: RawCodexEvent[] = [
       {
         observedAt: "2026-01-01T00:00:00.150Z",
@@ -156,10 +156,64 @@ describe("buildEventSpans", () => {
       },
     ];
     const spans = buildEventSpans(events, context, [SECRET]);
-    expect(spans[0]?.category).toBe("runtime.error");
-    expect(spans[0]?.status).toBe("error");
+    expect(spans[0]?.category).toBe("runtime.warning");
+    expect(spans[0]?.status).toBe("warning");
     expect(spans[0]?.errorMessage).toContain("Model metadata for");
     expect(spans[0]?.errorMessage).not.toContain(SECRET);
+  });
+
+  it("keeps other nested item errors as failed spans", () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:00.150Z",
+        event: {
+          type: "item.completed",
+          item: { id: "item_0", type: "error", message: "Tool execution failed." },
+        },
+      },
+    ];
+    const spans = buildEventSpans(events, context, []);
+    expect(spans[0]?.category).toBe("runtime.error");
+    expect(spans[0]?.status).toBe("error");
+  });
+
+  it("categorizes both turn lifecycle events as model turns", () => {
+    const events: RawCodexEvent[] = [
+      { observedAt: "2026-01-01T00:00:00.100Z", event: { type: "turn.started" } },
+      { observedAt: "2026-01-01T00:00:00.200Z", event: { type: "turn.completed" } },
+    ];
+    const spans = buildEventSpans(events, context, []);
+    expect(spans.map((span) => span.category)).toEqual(["model.turn", "model.turn"]);
+  });
+
+  it("pairs item lifecycle events and computes their duration", () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:00.100Z",
+        event: { type: "item.started", item: { id: "cmd-1", type: "command_execution" } },
+      },
+      {
+        observedAt: "2026-01-01T00:00:02.600Z",
+        event: { type: "item.completed", item: { id: "cmd-1", type: "command_execution" } },
+      },
+    ];
+    const spans = buildEventSpans(events, context, []);
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.category).toBe("tool.call");
+    expect(spans[0]?.durationMs).toBe(2_500);
+  });
+
+  it("marks an item with no completion event as a warning", () => {
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:00.100Z",
+        event: { type: "item.started", item: { id: "cmd-1", type: "command_execution" } },
+      },
+    ];
+    const spans = buildEventSpans(events, context, []);
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.status).toBe("warning");
+    expect(spans[0]?.completedAt).toBeNull();
   });
 
   it("falls back to an unknown.<type> category for unrecognized item types", () => {

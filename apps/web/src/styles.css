@@ -1042,6 +1042,11 @@ textarea:focus {
   background: #f6dfdc;
 }
 
+.span-status-warning {
+  color: #8a6512;
+  background: #f8ecc9;
+}
+
 .span-status-cancelled {
   color: #8a6d16;
   background: #f7ecd2;
@@ -1051,6 +1056,10 @@ textarea:focus {
   margin: 4px 0 0 2px;
   color: #9e4545;
   font-size: 11px;
+}
+
+.span-error-warning {
+  color: #8a6512;
 }
 
 .span-attributes {
