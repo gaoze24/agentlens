@@ -60,6 +60,28 @@ export interface TraceSpan {
   errorMessage: string | null;
 }
 
+export interface AuditSummary {
+  durationMs: number | null;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  modelTurns: number;
+  toolCalls: number;
+  warnings: number;
+  errors: number;
+  spanCount: number;
+}
+
+export interface AuditBundle {
+  schemaVersion: 1;
+  exportedAt: string;
+  agent: Pick<Agent, "id" | "name">;
+  run: AgentRun;
+  summary: AuditSummary;
+  spans: TraceSpan[];
+}
+
 export interface Database {
   version: 1;
   agents: Agent[];

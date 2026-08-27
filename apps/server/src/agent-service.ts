@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { buildAuditBundle } from "./audit.js";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError, RunnerExecutionError } from "./errors.js";
@@ -14,6 +15,7 @@ import type {
   Agent,
   AgentRun,
   AgentRunner,
+  AuditBundle,
   CreateAgentInput,
   Message,
   SpanStatus,
@@ -165,6 +167,17 @@ export class AgentService {
       .snapshot()
       .spans.filter((span) => span.runId === runId)
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  }
+
+  getAuditBundle(runId: string): AuditBundle {
+    const snapshot = this.store.snapshot();
+    const run = snapshot.runs.find((item) => item.id === runId);
+    if (!run) throw new HttpError(404, "Run not found");
+    const agent = snapshot.agents.find((item) => item.id === run.agentId);
+    if (!agent) throw new HttpError(404, "Agent not found");
+    const spans = snapshot.spans.filter((span) => span.runId === runId);
+    const secrets = this.config.arkApiKey ? [this.config.arkApiKey] : [];
+    return buildAuditBundle(agent, run, spans, secrets);
   }
 
   async sendMessage(
