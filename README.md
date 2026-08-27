@@ -34,10 +34,12 @@ The `AgentRunner` interface stays thin — a runner just returns the raw events 
 observed.
 
 **In the browser.** **View live trace** opens the span tree *while the Run is
-still executing* — spans stream in as Codex works. It shows status, duration,
-token total, sandbox mode, and container engine; **Failing steps** filters to
-errored spans; **Run history** lists past Runs with a status filter; **Export
-JSON** hands the trace to an external tool.
+still executing* — spans stream in as Codex works. Every span carries a
+proportional timeline bar on one shared axis, so which step dominated a Run is
+visible without reading a number. The header shows status, duration, token
+total, sandbox mode, and container engine; **Failing steps** filters to errored
+spans; **Run history** lists past Runs with a status filter; **Export JSON**
+hands the trace to an external tool.
 
 **No Ark credentials?** `npm run demo:seed` loads a fixture Agent with one
 successful and one failing Run, so the middleware is inspectable without a model

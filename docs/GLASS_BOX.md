@@ -169,8 +169,10 @@ demo has to produce real work first.
    afterwards.
 4. **Completed evidence.** Once the Run finishes, reopen the trace. Walk the
    tree: root → process → individual `tool.call` and `model.message` spans.
-   Point out duration, token total, sandbox mode, and container engine in the
-   summary bar. Expand a `tool.call` span to show the redacted payload.
+   Every span carries a proportional bar on one shared axis, so the shape of
+   the Run reads at a glance — which step dominated, where the gaps are. Point
+   out duration, token total, sandbox mode, and container engine in the summary
+   bar. Expand a `tool.call` span to show the redacted payload.
 5. **Failure case.** Send `Add a second test that asserts 1 === 2 so the suite
    fails, then run the whole suite and report the result.` The Agent reasons,
    edits a file, runs the suite, and the command exits non-zero — a Run that
@@ -204,7 +206,9 @@ npm run demo:seed -- --force   # replace an existing store
 The fixture contains a successful Run (reasoning → file writes → passing
 command) and a failing Run (reasoning → file write → failing command → error),
 including a span whose payload carries planted secrets already replaced with
-`[REDACTED]`, so redaction is visible in the seeded data too.
+`[REDACTED]`, so redaction is visible in the seeded data too. Steps carry
+realistic durations so the timeline shows a real profile rather than a row of
+zero-width ticks.
 
 ## Automated evidence
 

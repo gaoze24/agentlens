@@ -48,14 +48,71 @@ function buildSpanChildren(spans: TraceSpan[]): Map<string | null, TraceSpan[]> 
   return map;
 }
 
+/**
+ * The wall-clock window a trace occupies, used to lay every span out on one
+ * shared axis. A Run still executing has no end yet, so the window runs to now.
+ */
+interface TimeWindow {
+  start: number;
+  span: number;
+}
+
+function buildTimeWindow(spans: TraceSpan[], nowMs: number): TimeWindow | null {
+  if (spans.length === 0) return null;
+  let start = Number.POSITIVE_INFINITY;
+  let end = Number.NEGATIVE_INFINITY;
+  for (const item of spans) {
+    const from = Date.parse(item.startedAt);
+    const to = item.completedAt === null ? nowMs : Date.parse(item.completedAt);
+    if (Number.isFinite(from)) start = Math.min(start, from);
+    if (Number.isFinite(to)) end = Math.max(end, to);
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  // Never divide by zero: a trace can be sub-millisecond.
+  return { start, span: Math.max(1, end - start) };
+}
+
+function SpanBar({
+  span,
+  timeWindow,
+  nowMs,
+}: {
+  span: TraceSpan;
+  timeWindow: TimeWindow;
+  nowMs: number;
+}) {
+  const from = Date.parse(span.startedAt);
+  const to = span.completedAt === null ? nowMs : Date.parse(span.completedAt);
+  if (!Number.isFinite(from)) return <span className="span-track" />;
+  const offset = ((from - timeWindow.start) / timeWindow.span) * 100;
+  const raw = ((Math.max(to, from) - from) / timeWindow.span) * 100;
+  // A zero-width point span still has to be visible.
+  const width = Math.max(raw, 1.2);
+  return (
+    <span className="span-track">
+      <span
+        className={"span-bar span-bar-" + span.status}
+        style={{
+          left: Math.min(offset, 99) + "%",
+          width: Math.min(width, 100 - Math.min(offset, 99)) + "%",
+        }}
+      />
+    </span>
+  );
+}
+
 function SpanNode({
   span,
   childrenBySpanId,
   depth,
+  timeWindow,
+  nowMs,
 }: {
   span: TraceSpan;
   childrenBySpanId: Map<string | null, TraceSpan[]>;
   depth: number;
+  timeWindow: TimeWindow | null;
+  nowMs: number;
 }) {
   const [expanded, setExpanded] = useState(false);
   const children = childrenBySpanId.get(span.id) ?? [];
@@ -68,8 +125,9 @@ function SpanNode({
         </span>
         <span className="span-name">{span.name}</span>
         <span className="span-category">{span.category}</span>
+        {timeWindow && <SpanBar span={span} timeWindow={timeWindow} nowMs={nowMs} />}
         <span className="span-duration">
-          {span.durationMs !== null ? span.durationMs + " ms" : "—"}
+          {span.durationMs !== null ? formatDuration(span.durationMs) : "—"}
         </span>
       </button>
       {span.errorMessage && <div className="span-error">{span.errorMessage}</div>}
@@ -82,6 +140,8 @@ function SpanNode({
           span={child}
           childrenBySpanId={childrenBySpanId}
           depth={depth + 1}
+          timeWindow={timeWindow}
+          nowMs={nowMs}
         />
       ))}
     </div>
@@ -154,8 +214,21 @@ function TracePanel({
     };
   }, [live, runId]);
 
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 400);
+    return () => window.clearInterval(timer);
+  }, [live]);
+
   const childrenBySpanId = useMemo(() => buildSpanChildren(spans ?? []), [spans]);
   const roots = childrenBySpanId.get(null) ?? [];
+  // A finished trace is laid out against its own end, not the wall clock, so
+  // the bars stay put once the Run is over.
+  const timeWindow = useMemo(
+    () => buildTimeWindow(spans ?? [], live ? nowMs : Number.NEGATIVE_INFINITY),
+    [spans, live, nowMs],
+  );
   const failingSpans = useMemo(
     () => (spans ?? []).filter((span) => span.status === "error"),
     [spans],
@@ -246,6 +319,13 @@ function TracePanel({
         {spans && roots.length === 0 && (
           <p className="trace-empty">No spans recorded for this run.</p>
         )}
+        {spans && roots.length > 0 && timeWindow && (
+          <div className="trace-axis">
+            <span>0</span>
+            <span className="trace-axis-line" />
+            <span>{formatDuration(timeWindow.span)}</span>
+          </div>
+        )}
         {spans && roots.length > 0 && errorsOnly && (
           <div className="trace-tree">
             {failingSpans.map((span) => (
@@ -254,6 +334,8 @@ function TracePanel({
                 span={span}
                 childrenBySpanId={new Map()}
                 depth={0}
+                timeWindow={timeWindow}
+                nowMs={nowMs}
               />
             ))}
           </div>
@@ -261,7 +343,14 @@ function TracePanel({
         {spans && roots.length > 0 && !errorsOnly && (
           <div className="trace-tree">
             {roots.map((root) => (
-              <SpanNode key={root.id} span={root} childrenBySpanId={childrenBySpanId} depth={0} />
+              <SpanNode
+                key={root.id}
+                span={root}
+                childrenBySpanId={childrenBySpanId}
+                depth={0}
+                timeWindow={timeWindow}
+                nowMs={nowMs}
+              />
             ))}
           </div>
         )}

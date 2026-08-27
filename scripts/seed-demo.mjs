@@ -18,8 +18,13 @@ const agentId = randomUUID();
 const base = Date.parse("2026-08-26T10:00:00.000Z");
 const at = (seconds) => new Date(base + seconds * 1_000).toISOString();
 
-/** One Codex event rendered as an already-redacted span. */
-function eventSpan(runId, parentSpanId, seconds, category, name, attributes, errorMessage = null) {
+/**
+ * One Codex item rendered as an already-redacted span. Steps carry a real
+ * duration, the way an item.started / item.completed pair does, so the
+ * timeline in the trace view shows the shape of the Run rather than a row of
+ * zero-width ticks.
+ */
+function eventSpan(runId, parentSpanId, startSeconds, durationSeconds, category, name, attributes, errorMessage = null) {
   return {
     id: randomUUID(),
     runId,
@@ -28,9 +33,9 @@ function eventSpan(runId, parentSpanId, seconds, category, name, attributes, err
     category,
     name,
     status: errorMessage ? "error" : "ok",
-    startedAt: at(seconds),
-    completedAt: at(seconds),
-    durationMs: 0,
+    startedAt: at(startSeconds),
+    completedAt: at(startSeconds + durationSeconds),
+    durationMs: Math.round(durationSeconds * 1_000),
     attributes,
     errorMessage,
   };
@@ -41,7 +46,14 @@ function buildRun({ offset, prompt, output, error, usage, steps }) {
   const rootId = randomUUID();
   const processId = randomUUID();
   const failed = Boolean(error);
-  const last = offset + steps.length + 1;
+  // Lay the steps end to end, starting once the Runtime is up.
+  const stepStarts = [];
+  let cursor = offset + 1;
+  for (const step of steps) {
+    stepStarts.push(cursor);
+    cursor += step.duration + 0.1;
+  }
+  const last = Math.round((cursor + 0.4) * 10) / 10;
   const spans = [
     {
       id: rootId,
@@ -53,7 +65,7 @@ function buildRun({ offset, prompt, output, error, usage, steps }) {
       status: failed ? "error" : "ok",
       startedAt: at(offset),
       completedAt: at(last),
-      durationMs: (last - offset) * 1_000,
+      durationMs: Math.round((last - offset) * 1_000),
       attributes: { promptLength: prompt.length },
       errorMessage: error,
     },
@@ -67,7 +79,7 @@ function buildRun({ offset, prompt, output, error, usage, steps }) {
       status: failed ? "error" : "ok",
       startedAt: at(offset + 0.5),
       completedAt: at(last),
-      durationMs: (last - offset - 0.5) * 1_000,
+      durationMs: Math.round((last - offset - 0.5) * 1_000),
       attributes: {
         sandboxMode: "workspace-write",
         runtimeProvider: "container",
@@ -80,7 +92,8 @@ function buildRun({ offset, prompt, output, error, usage, steps }) {
       eventSpan(
         runId,
         processId,
-        offset + index + 1,
+        stepStarts[index],
+        step.duration,
         step.category,
         step.name,
         step.attributes,
@@ -134,6 +147,7 @@ const successful = buildRun({
   usage: { inputTokens: 1_842, cachedInputTokens: 512, outputTokens: 613 },
   steps: [
     {
+      duration: 3.4,
       category: "model.reasoning",
       name: "model.reasoning:reasoning",
       attributes: {
@@ -145,6 +159,7 @@ const successful = buildRun({
       },
     },
     {
+      duration: 0.4,
       category: "tool.call",
       name: "tool.call:file_change",
       attributes: {
@@ -153,6 +168,7 @@ const successful = buildRun({
       },
     },
     {
+      duration: 0.3,
       category: "tool.call",
       name: "tool.call:file_change",
       attributes: {
@@ -161,6 +177,7 @@ const successful = buildRun({
       },
     },
     {
+      duration: 2.6,
       category: "tool.call",
       name: "tool.call:command_execution",
       attributes: {
@@ -174,6 +191,7 @@ const successful = buildRun({
       },
     },
     {
+      duration: 0.6,
       category: "model.message",
       name: "model.message:agent_message",
       attributes: {
@@ -196,6 +214,7 @@ const failing = buildRun({
   usage: { inputTokens: 2_140, cachedInputTokens: 1_024, outputTokens: 288 },
   steps: [
     {
+      duration: 2.8,
       category: "model.reasoning",
       name: "model.reasoning:reasoning",
       attributes: {
@@ -207,6 +226,7 @@ const failing = buildRun({
       },
     },
     {
+      duration: 0.4,
       category: "tool.call",
       name: "tool.call:file_change",
       attributes: {
@@ -217,6 +237,7 @@ const failing = buildRun({
     {
       // Demonstrates redaction: the planted key and bearer token are already
       // stored as [REDACTED], exactly as trace.ts would have written them.
+      duration: 1.9,
       category: "tool.call",
       name: "tool.call:command_execution",
       attributes: {
@@ -230,6 +251,7 @@ const failing = buildRun({
       },
     },
     {
+      duration: 3.1,
       category: "tool.call",
       name: "tool.call:command_execution",
       attributes: {
@@ -245,6 +267,7 @@ const failing = buildRun({
       errorMessage: null,
     },
     {
+      duration: 0.1,
       category: "runtime.error",
       name: "runtime.error",
       attributes: {

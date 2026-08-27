@@ -7,7 +7,7 @@ recovery points are marked 1-7 and tabulated below.
 ```mermaid
 flowchart LR
     subgraph browser["BROWSER (untrusted, holds no Ark key)"]
-        UI["React Playground<br/>span tree, run history,<br/>failing-step filter, export"]
+        UI["React Playground<br/>span tree + timeline, run history,<br/>failing-step filter, export"]
     end
 
     subgraph plane["CONTROL PLANE (trusted, holds the Ark key, owns the trace)"]

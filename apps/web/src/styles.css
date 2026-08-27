@@ -1013,7 +1013,8 @@ textarea:focus {
 }
 
 .span-duration {
-  margin-left: auto;
+  flex: 0 0 54px;
+  text-align: right;
   color: var(--muted);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
@@ -1305,4 +1306,70 @@ textarea:focus {
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: 12px;
+}
+
+/* Timeline: every span laid out on one shared axis, so the shape of a Run --
+   which step dominated, what ran in parallel, where the gaps are -- is legible
+   without reading any numbers. */
+.span-track {
+  position: relative;
+  flex: 0 0 200px;
+  margin-left: auto;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.span-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  border-radius: 999px;
+}
+
+.span-bar-ok {
+  background: #3f9e75;
+}
+
+.span-bar-error {
+  background: #c25757;
+}
+
+.span-bar-cancelled {
+  background: #c4a04a;
+}
+
+.span-bar-running {
+  background: linear-gradient(90deg, #6b7fd7, #aab7ef);
+  animation: span-pulse 1.1s ease-in-out infinite;
+}
+
+.trace-axis {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 262px;
+  margin: 12px 0 2px auto;
+  padding-right: 9px;
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.trace-axis-line {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+@media (max-width: 620px) {
+  .span-track {
+    flex-basis: 96px;
+  }
+
+  .trace-axis {
+    width: 158px;
+  }
 }
