@@ -622,6 +622,29 @@ textarea:focus {
   gap: 6px;
 }
 
+.playground-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.run-history-button {
+  min-height: 28px;
+  padding: 5px 9px;
+  font-size: 10px;
+}
+
+.run-history-button span {
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  color: #5f4bc5;
+  background: #eeeafd;
+}
+
 .pulse {
   width: 6px;
   height: 6px;
@@ -954,6 +977,106 @@ textarea:focus {
   overflow-y: auto;
 }
 
+.modal-runs {
+  width: min(780px, 100%);
+  max-height: 82vh;
+  overflow-y: auto;
+}
+
+.run-history-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.run-history-heading > button {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.run-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.run-history-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.run-history-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.run-history-main p {
+  margin: 6px 0 0;
+  overflow: hidden;
+  color: #353632;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-history-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.run-status {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #e5e4df;
+  color: #666760;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.run-status-completed {
+  color: #277756;
+  background: #dcf2e9;
+}
+
+.run-status-failed {
+  color: #ac4343;
+  background: #f6dfdc;
+}
+
+.run-status-cancelled {
+  color: #8a6d16;
+  background: #f7ecd2;
+}
+
+.run-status-running,
+.run-status-queued {
+  color: #5f4bc5;
+  background: #eeeafd;
+}
+
+.run-history-error {
+  display: block;
+  margin-top: 5px;
+  color: #9e4545;
+  font-size: 10px;
+}
+
 .trace-entry {
   display: flex;
   justify-content: flex-end;
@@ -1042,6 +1165,11 @@ textarea:focus {
   background: #f6dfdc;
 }
 
+.span-status-warning {
+  color: #8a6512;
+  background: #f8ecc9;
+}
+
 .span-status-cancelled {
   color: #8a6d16;
   background: #f7ecd2;
@@ -1051,6 +1179,10 @@ textarea:focus {
   margin: 4px 0 0 2px;
   color: #9e4545;
   font-size: 11px;
+}
+
+.span-error-warning {
+  color: #8a6512;
 }
 
 .span-attributes {
@@ -1198,6 +1330,11 @@ textarea:focus {
 
   .session-info {
     display: none;
+  }
+
+  .run-history-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .messages {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
+import { RunnerExecutionError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RawCodexEvent, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -117,7 +118,19 @@ describe("Agent lifecycle", () => {
   it("identifies the failing step when a run fails", async () => {
     const runner: AgentRunner = {
       run: async () => {
-        throw new Error("Codex exited with code 1: boom");
+        throw new RunnerExecutionError(
+          "Codex exited with code 1: boom for test-key",
+          [
+            {
+              observedAt: new Date().toISOString(),
+              event: {
+                type: "item.completed",
+                item: { id: "item-failed", type: "error", message: "tool failed" },
+              },
+            },
+          ],
+          { inputTokens: 7, outputTokens: 1 },
+        );
       },
       cancel: async () => false,
       isAvailable: async () => true,
@@ -133,6 +146,12 @@ describe("Agent lifecycle", () => {
     const process = spans.find((span) => span.parentSpanId === root?.id);
     expect(process?.status).toBe("error");
     expect(process?.errorMessage).toContain("boom");
+    expect(process?.errorMessage).not.toContain("test-key");
+    expect(process?.attributes.usage).toEqual({ inputTokens: 7, outputTokens: 1 });
+    const failedEvent = spans.find((span) => span.parentSpanId === process?.id);
+    expect(failedEvent?.category).toBe("runtime.error");
+    expect(failedEvent?.errorMessage).toContain("tool failed");
+    expect(service.getRun(run.id).error).not.toContain("test-key");
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {

@@ -4,6 +4,8 @@ import type { RawCodexEvent, SpanStatus, TraceSpan } from "./types.js";
 const MAX_STRING_LENGTH = 4_096;
 const TRUNCATION_SUFFIX = "…[truncated]";
 const BEARER_PATTERN = /Bearer\s+[A-Za-z0-9._~+/-]+=*/gi;
+const MODEL_METADATA_FALLBACK_PATTERN =
+  /Model metadata for .+ not found\b/i;
 
 export function redactSecrets(value: string, secrets: readonly string[]): string {
   let result = value;
@@ -135,7 +137,7 @@ function categoryForEvent(event: Record<string, unknown>): string {
     if (itemType === "error") return "runtime.error";
     return "unknown." + itemType;
   }
-  if (type === "turn.completed") return "model.turn";
+  if (type === "turn.started" || type === "turn.completed") return "model.turn";
   if (type === "thread.started") return "runtime.thread";
   if (type === "error") return "runtime.error";
   return "unknown." + type;
@@ -164,27 +166,81 @@ function messageForErrorEvent(event: Record<string, unknown>, secrets: readonly 
   return redactSecrets(raw, secrets);
 }
 
+function itemIdForEvent(event: Record<string, unknown>): string | null {
+  const item = event.item as Record<string, unknown> | undefined;
+  return item && typeof item.id === "string" ? item.id : null;
+}
+
+function buildEventSpan(
+  raw: RawCodexEvent,
+  context: { runId: string; agentId: string; parentSpanId: string },
+  secrets: readonly string[],
+  startedAt = raw.observedAt,
+): TraceSpan {
+  let category = categoryForEvent(raw.event);
+  const errorMessage = category === "runtime.error"
+    ? messageForErrorEvent(raw.event, secrets)
+    : null;
+  const isWarning = errorMessage !== null && MODEL_METADATA_FALLBACK_PATTERN.test(errorMessage);
+  if (isWarning) category = "runtime.warning";
+  const completedAt = raw.observedAt;
+  return {
+    id: randomUUID(),
+    runId: context.runId,
+    agentId: context.agentId,
+    parentSpanId: context.parentSpanId,
+    category,
+    name: nameForEvent(raw.event, category),
+    status: isWarning ? "warning" : errorMessage !== null ? "error" : "ok",
+    startedAt,
+    completedAt,
+    durationMs: durationBetween(startedAt, completedAt),
+    attributes: redactAttributes(raw.event, secrets),
+    errorMessage,
+  };
+}
+
 export function buildEventSpans(
   events: readonly RawCodexEvent[],
   context: { runId: string; agentId: string; parentSpanId: string },
   secrets: readonly string[],
 ): TraceSpan[] {
-  return events.map((raw) => {
-    const category = categoryForEvent(raw.event);
-    const isError = category === "runtime.error";
-    return {
+  const spans: TraceSpan[] = [];
+  const pendingItems = new Map<string, RawCodexEvent>();
+
+  for (const raw of events) {
+    const type = raw.event.type;
+    const itemId = itemIdForEvent(raw.event);
+    if (type === "item.started" && itemId) {
+      pendingItems.set(itemId, raw);
+      continue;
+    }
+    if (type === "item.completed" && itemId) {
+      const started = pendingItems.get(itemId);
+      if (started) pendingItems.delete(itemId);
+      spans.push(buildEventSpan(raw, context, secrets, started?.observedAt));
+      continue;
+    }
+    spans.push(buildEventSpan(raw, context, secrets));
+  }
+
+  for (const pending of pendingItems.values()) {
+    const category = categoryForEvent(pending.event);
+    spans.push({
       id: randomUUID(),
       runId: context.runId,
       agentId: context.agentId,
       parentSpanId: context.parentSpanId,
       category,
-      name: nameForEvent(raw.event, category),
-      status: isError ? "error" : "ok",
-      startedAt: raw.observedAt,
-      completedAt: raw.observedAt,
-      durationMs: 0,
-      attributes: redactAttributes(raw.event, secrets),
-      errorMessage: isError ? messageForErrorEvent(raw.event, secrets) : null,
-    } satisfies TraceSpan;
-  });
+      name: nameForEvent(pending.event, category),
+      status: "warning",
+      startedAt: pending.observedAt,
+      completedAt: null,
+      durationMs: null,
+      attributes: redactAttributes(pending.event, secrets),
+      errorMessage: "Event started but no matching item.completed event was observed.",
+    });
+  }
+
+  return spans.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
 }

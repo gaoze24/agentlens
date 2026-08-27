@@ -93,7 +93,8 @@ flowchart TD
     Run["Root span: run.orchestration\n(AgentService.executeRun)"] --> Process["Process span: runtime.process\n(AgentRunner.run invocation)"]
     Process --> Event1["Event span: model.message"]
     Process --> Event2["Event span: tool.call"]
-    Process --> Event3["Event span: runtime.error (on failure)"]
+    Process --> Event3["Event span: runtime.warning"]
+    Process --> Event4["Event span: runtime.error (on failure)"]
 ```
 
 - **Root span** (`category: orchestration`) covers the whole Run, closed
@@ -105,8 +106,12 @@ flowchart TD
 - **Event spans** are derived from the Codex CLI's `--json` event stream,
   captured verbatim in `codex-runner.ts`/`container-codex-runner.ts` and
   shaped into spans by `trace.ts`. Category is inferred from the event's
-  `item.type`; unrecognized types fall back to `unknown.<type>` rather than
-  being dropped.
+  `item.type`; known non-fatal runtime diagnostics are classified as warnings,
+  and unrecognized types fall back to `unknown.<type>` rather than being
+  dropped. Matching `item.started`/`item.completed` records are combined so
+  their span carries the actual step duration. If a runner fails, its captured
+  event stream and partial usage are retained and written before the Run is
+  closed, preserving the evidence needed to diagnose the failure.
 
 **Trust boundary and redaction.** `trace.ts`'s `redactSecrets` strips the
 configured Ark API key and any `Bearer <token>` pattern from every span
@@ -118,5 +123,6 @@ place; the string-match redaction is defense in depth. `GET
 /api/runs/:id/trace` sits behind the same bearer-auth boundary as every
 other `/api/*` route.
 
-View a Run's trace from the Playground via the **View trace** button, shown
+View the latest Run's trace from the Playground via **View trace**, or open
+**Runs** to inspect any historical Run and its trace. Trace access is available
 once a Run reaches a terminal state (`completed`, `failed`, or `cancelled`).

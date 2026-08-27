@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
-import { HttpError, RunCancelledError } from "./errors.js";
+import { HttpError, RunCancelledError, RunnerExecutionError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import {
   buildEventSpans,
@@ -324,12 +324,27 @@ export class AgentService {
       const message = error instanceof Error ? error.message : String(error);
       const redactedMessage = redactSecrets(message, secrets);
       const status: SpanStatus = cancelled ? "cancelled" : "error";
+      const runnerError = error instanceof RunnerExecutionError ? error : null;
+      const eventSpans = processSpan && runnerError
+        ? buildEventSpans(
+            runnerError.events,
+            { runId: run.id, agentId: agentAtStart.id, parentSpanId: processSpan.id },
+            secrets,
+          )
+        : [];
       const spans: TraceSpan[] = [
         completeSpan(runSpan, status, completedAt, cancelled ? null : redactedMessage),
       ];
       if (processSpan) {
         spans.push(
-          completeSpan(processSpan, status, completedAt, cancelled ? null : redactedMessage),
+          completeSpan(
+            processSpan,
+            status,
+            completedAt,
+            cancelled ? null : redactedMessage,
+            runnerError?.usage ? { usage: runnerError.usage } : {},
+          ),
+          ...eventSpans,
         );
       }
       await this.store.mutate((database) => {
@@ -337,14 +352,15 @@ export class AgentService {
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (storedRun) {
           storedRun.status = cancelled ? "cancelled" : "failed";
-          storedRun.error = message;
+          storedRun.error = cancelled ? message : redactedMessage;
+          storedRun.usage = runnerError?.usage ?? null;
           storedRun.completedAt = completedAt;
         }
         if (agent) {
           if (agent.status !== "stopped") {
             agent.status = cancelled ? "ready" : "error";
           }
-          agent.lastError = cancelled ? null : message;
+          agent.lastError = cancelled ? null : redactedMessage;
           agent.updatedAt = completedAt;
         }
         database.spans.push(...spans);

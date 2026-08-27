@@ -35,10 +35,12 @@ export interface AgentRun {
     cachedInputTokens?: number;
     outputTokens?: number;
   } | null;
+  startedAt: string | null;
+  completedAt: string | null;
   createdAt: string;
 }
 
-export type SpanStatus = "ok" | "error" | "cancelled";
+export type SpanStatus = "ok" | "warning" | "error" | "cancelled";
 
 export interface TraceSpan {
   id: string;

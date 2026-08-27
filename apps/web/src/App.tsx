@@ -22,6 +22,21 @@ function formatTime(value: string): string {
   }).format(new Date(value));
 }
 
+function formatRunDuration(run: AgentRun): string {
+  if (!run.startedAt) return run.status === "queued" ? "Queued" : "—";
+  if (!run.completedAt) return "Running";
+  const durationMs = Date.parse(run.completedAt) - Date.parse(run.startedAt);
+  if (!Number.isFinite(durationMs) || durationMs < 0) return "—";
+  if (durationMs < 1_000) return durationMs + " ms";
+  return (durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0) + " s";
+}
+
+function formatRunUsage(run: AgentRun): string {
+  const input = run.usage?.inputTokens ?? 0;
+  const output = run.usage?.outputTokens ?? 0;
+  return input || output ? (input + output).toLocaleString() + " tokens" : "No usage";
+}
+
 function StatusPill({ status }: { status: Agent["status"] }) {
   return (
     <span className={"status status-" + status}>
@@ -72,7 +87,9 @@ function SpanNode({
           {span.durationMs !== null ? span.durationMs + " ms" : "—"}
         </span>
       </button>
-      {span.errorMessage && <div className="span-error">{span.errorMessage}</div>}
+      {span.errorMessage && (
+        <div className={"span-error span-error-" + span.status}>{span.errorMessage}</div>
+      )}
       {expanded && (
         <pre className="span-attributes">{JSON.stringify(span.attributes, null, 2)}</pre>
       )}
@@ -148,10 +165,67 @@ function TracePanel({ runId, onClose }: { runId: string; onClose: () => void }) 
   );
 }
 
+function RunHistoryPanel({
+  runs,
+  onTrace,
+  onClose,
+}: {
+  runs: AgentRun[];
+  onTrace: (runId: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="modal modal-runs" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-heading run-history-heading">
+          <div>
+            <span className="eyebrow">Agent diagnostics</span>
+            <h2>Run history</h2>
+            <p>Open the trace for any completed, failed, or cancelled Run.</p>
+          </div>
+          <button type="button" onClick={onClose}>×</button>
+        </div>
+        {runs.length === 0 ? (
+          <p className="trace-empty">This Agent has not run yet.</p>
+        ) : (
+          <div className="run-history-list">
+            {runs.map((run) => {
+              const terminal = ["completed", "failed", "cancelled"].includes(run.status);
+              return (
+                <article className="run-history-row" key={run.id}>
+                  <div className="run-history-main">
+                    <div className="run-history-meta">
+                      <span className={"run-status run-status-" + run.status}>{run.status}</span>
+                      <span>{formatTime(run.createdAt)}</span>
+                      <span>{formatRunDuration(run)}</span>
+                      <span>{formatRunUsage(run)}</span>
+                    </div>
+                    <p>{run.prompt}</p>
+                    {run.error && <span className="run-history-error">{run.error}</span>}
+                  </div>
+                  <button
+                    type="button"
+                    className="button button-ghost"
+                    disabled={!terminal}
+                    onClick={() => onTrace(run.id)}
+                  >
+                    View trace
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [runs, setRuns] = useState<AgentRun[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -163,6 +237,7 @@ export default function App() {
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
   const [traceRunId, setTraceRunId] = useState<string | null>(null);
+  const [showRunHistory, setShowRunHistory] = useState(false);
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -191,6 +266,14 @@ export default function App() {
     }
   }, []);
 
+  const refreshRuns = useCallback(async (agentId: string) => {
+    const result = await api.runs(agentId);
+    if (mountedRef.current && selectedIdRef.current === agentId) {
+      setRuns(result.runs);
+    }
+    return result.runs;
+  }, []);
+
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), api.system().then(setSystem)]);
   }, [refreshAgents]);
@@ -212,15 +295,17 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setRuns([]);
     setShowSettings(false);
+    setShowRunHistory(false);
     if (!selectedId) {
       setMessages([]);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
-      .then(([, result]) => {
+    void Promise.all([refreshMessages(selectedId), refreshRuns(selectedId)])
+      .then(([, nextRuns]) => {
         if (selectedIdRef.current !== selectedId) return;
-        const latest = result.runs[0] ?? null;
+        const latest = nextRuns[0] ?? null;
         setActiveRun(latest);
         if (latest && ["queued", "running"].includes(latest.status)) {
           void pollRun(latest.id, selectedId).catch((reason) =>
@@ -231,7 +316,7 @@ export default function App() {
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
-  }, [refreshMessages, selectedId]);
+  }, [refreshMessages, refreshRuns, selectedId]);
 
   useEffect(() => {
     if (selected) {
@@ -323,9 +408,14 @@ export default function App() {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
         const result = await api.run(runId);
-        if (selectedIdRef.current === agentId) setActiveRun(result.run);
+        if (selectedIdRef.current === agentId) {
+          setActiveRun(result.run);
+          setRuns((current) =>
+            current.map((run) => run.id === result.run.id ? result.run : run),
+          );
+        }
         if (!["queued", "running"].includes(result.run.status)) {
-          await Promise.all([refreshMessages(agentId), refreshAgents()]);
+          await Promise.all([refreshMessages(agentId), refreshRuns(agentId), refreshAgents()]);
           return;
         }
       }
@@ -345,6 +435,10 @@ export default function App() {
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
+        setRuns((current) => [
+          result.run,
+          ...current.filter((run) => run.id !== result.run.id),
+        ]);
       }
       setAgents((current) =>
         current.map((agent) =>
@@ -597,9 +691,19 @@ export default function App() {
                   <span className="eyebrow">Playground</span>
                   <h2>Build something with your Agent</h2>
                 </div>
-                <div className="session-info">
-                  <span className="pulse" />
-                  {selected.codexThreadId ? "Session connected" : "New session"}
+                <div className="playground-actions">
+                  <button
+                    type="button"
+                    className="button button-ghost run-history-button"
+                    onClick={() => setShowRunHistory(true)}
+                    disabled={runs.length === 0}
+                  >
+                    Runs <span>{runs.length}</span>
+                  </button>
+                  <div className="session-info">
+                    <span className="pulse" />
+                    {selected.codexThreadId ? "Session connected" : "New session"}
+                  </div>
                 </div>
               </div>
 
@@ -793,6 +897,16 @@ export default function App() {
 
       {traceRunId && (
         <TracePanel runId={traceRunId} onClose={() => setTraceRunId(null)} />
+      )}
+      {showRunHistory && (
+        <RunHistoryPanel
+          runs={runs}
+          onClose={() => setShowRunHistory(false)}
+          onTrace={(runId) => {
+            setShowRunHistory(false);
+            setTraceRunId(runId);
+          }}
+        />
       )}
     </div>
   );
