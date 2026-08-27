@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo, TraceSpan } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  AuditBundle,
+  Message,
+  SystemInfo,
+  TraceSpan,
+} from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -22,19 +29,41 @@ function formatTime(value: string): string {
   }).format(new Date(value));
 }
 
-function formatRunDuration(run: AgentRun): string {
-  if (!run.startedAt) return run.status === "queued" ? "Queued" : "—";
-  if (!run.completedAt) return "Running";
+function runDurationMs(run: AgentRun): number | null {
+  if (!run.startedAt || !run.completedAt) return null;
   const durationMs = Date.parse(run.completedAt) - Date.parse(run.startedAt);
-  if (!Number.isFinite(durationMs) || durationMs < 0) return "—";
+  return Number.isFinite(durationMs) && durationMs >= 0 ? durationMs : null;
+}
+
+function formatDuration(durationMs: number | null): string {
+  if (durationMs === null) return "—";
   if (durationMs < 1_000) return durationMs + " ms";
   return (durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0) + " s";
 }
 
+function formatRunDuration(run: AgentRun): string {
+  if (!run.startedAt) return run.status === "queued" ? "Queued" : "—";
+  if (!run.completedAt) return "Running";
+  return formatDuration(runDurationMs(run));
+}
+
+function runTokens(run: AgentRun): number {
+  return (run.usage?.inputTokens ?? 0) + (run.usage?.outputTokens ?? 0);
+}
+
 function formatRunUsage(run: AgentRun): string {
-  const input = run.usage?.inputTokens ?? 0;
-  const output = run.usage?.outputTokens ?? 0;
-  return input || output ? (input + output).toLocaleString() + " tokens" : "No usage";
+  const total = runTokens(run);
+  return total ? total.toLocaleString() + " tokens" : "No usage";
+}
+
+function StatCard({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return (
+    <div className="stat-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {detail && <small>{detail}</small>}
+    </div>
+  );
 }
 
 function StatusPill({ status }: { status: Agent["status"] }) {
@@ -61,6 +90,29 @@ function buildSpanChildren(spans: TraceSpan[]): Map<string | null, TraceSpan[]> 
     siblings.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
   }
   return map;
+}
+
+type TraceFilter = "all" | "model" | "tool" | "warning" | "error";
+
+function filterTraceSpans(spans: TraceSpan[], filter: TraceFilter): TraceSpan[] {
+  if (filter === "all") return spans;
+  const byId = new Map(spans.map((span) => [span.id, span]));
+  const included = new Set<string>();
+  for (const span of spans) {
+    const matches =
+      filter === "model"
+        ? span.category.startsWith("model.")
+        : filter === "tool"
+          ? span.category === "tool.call"
+          : span.status === filter;
+    if (!matches) continue;
+    let current: TraceSpan | undefined = span;
+    while (current) {
+      included.add(current.id);
+      current = current.parentSpanId ? byId.get(current.parentSpanId) : undefined;
+    }
+  }
+  return spans.filter((span) => included.has(span.id));
 }
 
 function SpanNode({
@@ -106,17 +158,19 @@ function SpanNode({
 }
 
 function TracePanel({ runId, onClose }: { runId: string; onClose: () => void }) {
-  const [spans, setSpans] = useState<TraceSpan[] | null>(null);
+  const [bundle, setBundle] = useState<AuditBundle | null>(null);
+  const [filter, setFilter] = useState<TraceFilter>("all");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    setSpans(null);
+    setBundle(null);
+    setFilter("all");
     setError(null);
     api
-      .trace(runId)
+      .audit(runId)
       .then((result) => {
-        if (active) setSpans(result.spans);
+        if (active) setBundle(result);
       })
       .catch((reason) => {
         if (active) setError(reason instanceof Error ? reason.message : String(reason));
@@ -126,39 +180,120 @@ function TracePanel({ runId, onClose }: { runId: string; onClose: () => void }) 
     };
   }, [runId]);
 
-  const childrenBySpanId = useMemo(() => buildSpanChildren(spans ?? []), [spans]);
+  const visibleSpans = useMemo(
+    () => filterTraceSpans(bundle?.spans ?? [], filter),
+    [bundle, filter],
+  );
+  const childrenBySpanId = useMemo(() => buildSpanChildren(visibleSpans), [visibleSpans]);
   const roots = childrenBySpanId.get(null) ?? [];
+
+  const downloadAudit = () => {
+    if (!bundle) return;
+    const blob = new Blob([JSON.stringify(bundle, null, 2) + "\n"], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `agentlens-run-${bundle.run.id}-audit.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const filterCounts: Record<TraceFilter, number> = {
+    all: bundle?.summary.spanCount ?? 0,
+    model: bundle?.spans.filter((span) => span.category.startsWith("model.")).length ?? 0,
+    tool: bundle?.summary.toolCalls ?? 0,
+    warning: bundle?.summary.warnings ?? 0,
+    error: bundle?.summary.errors ?? 0,
+  };
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="modal modal-trace" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-heading">
           <div>
-            <span className="eyebrow">Run diagnostics</span>
-            <h2>Trace</h2>
-            <p>Correlated Run and step events. Secrets are redacted before storage.</p>
+            <span className="eyebrow">Glass Box audit</span>
+            <h2>Run trace</h2>
+            <p>Inspect every step, then export a redacted evidence bundle.</p>
           </div>
-          <button type="button" onClick={onClose}>×</button>
+          <div className="modal-heading-actions">
+            <button
+              type="button"
+              className="button button-ghost export-button"
+              disabled={!bundle}
+              onClick={downloadAudit}
+            >
+              ↓ Export JSON
+            </button>
+            <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
+              ×
+            </button>
+          </div>
         </div>
         {error && (
           <div className="error-banner" role="alert">
             {error}
           </div>
         )}
-        {!error && !spans && (
+        {!error && !bundle && (
           <div className="trace-loading">
             <Spinner />
           </div>
         )}
-        {spans && roots.length === 0 && (
-          <p className="trace-empty">No spans recorded for this run.</p>
-        )}
-        {spans && roots.length > 0 && (
-          <div className="trace-tree">
-            {roots.map((root) => (
-              <SpanNode key={root.id} span={root} childrenBySpanId={childrenBySpanId} depth={0} />
-            ))}
-          </div>
+        {bundle && (
+          <>
+            <div className="insight-grid trace-insights">
+              <StatCard label="Duration" value={formatDuration(bundle.summary.durationMs)} />
+              <StatCard
+                label="Tokens"
+                value={bundle.summary.totalTokens.toLocaleString()}
+                detail={`${bundle.summary.inputTokens.toLocaleString()} in · ${bundle.summary.outputTokens.toLocaleString()} out${bundle.summary.cachedInputTokens ? ` · ${bundle.summary.cachedInputTokens.toLocaleString()} cached` : ""}`}
+              />
+              <StatCard
+                label="Tool calls"
+                value={bundle.summary.toolCalls.toLocaleString()}
+                detail={`${bundle.summary.modelTurns.toLocaleString()} model turns`}
+              />
+              <StatCard
+                label="Signals"
+                value={(bundle.summary.warnings + bundle.summary.errors).toLocaleString()}
+                detail={`${bundle.summary.warnings} warnings · ${bundle.summary.errors} errors`}
+              />
+            </div>
+            <div className="filter-bar trace-filter-bar" aria-label="Trace filters">
+              {([
+                ["all", "All"],
+                ["model", "Model"],
+                ["tool", "Tools"],
+                ["warning", "Warnings"],
+                ["error", "Errors"],
+              ] as Array<[TraceFilter, string]>).map(([value, label]) => (
+                <button
+                  type="button"
+                  key={value}
+                  className={filter === value ? "filter-chip active" : "filter-chip"}
+                  onClick={() => setFilter(value)}
+                >
+                  {label}<span>{filterCounts[value]}</span>
+                </button>
+              ))}
+            </div>
+            {roots.length === 0 ? (
+              <p className="trace-empty">No spans match this filter.</p>
+            ) : (
+              <div className="trace-tree">
+                {roots.map((root) => (
+                  <SpanNode
+                    key={root.id}
+                    span={root}
+                    childrenBySpanId={childrenBySpanId}
+                    depth={0}
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -174,6 +309,46 @@ function RunHistoryPanel({
   onTrace: (runId: string) => void;
   onClose: () => void;
 }) {
+  const [statusFilter, setStatusFilter] = useState<"all" | AgentRun["status"]>("all");
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<"newest" | "duration" | "tokens">("newest");
+
+  const filteredRuns = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return runs
+      .filter((run) => statusFilter === "all" || run.status === statusFilter)
+      .filter((run) => {
+        if (!normalizedQuery) return true;
+        return [run.prompt, run.output, run.error]
+          .filter((value): value is string => Boolean(value))
+          .some((value) => value.toLowerCase().includes(normalizedQuery));
+      })
+      .sort((left, right) => {
+        if (sort === "duration") {
+          return (runDurationMs(right) ?? -1) - (runDurationMs(left) ?? -1);
+        }
+        if (sort === "tokens") return runTokens(right) - runTokens(left);
+        return right.createdAt.localeCompare(left.createdAt);
+      });
+  }, [query, runs, sort, statusFilter]);
+
+  const terminalRuns = filteredRuns.filter((run) =>
+    ["completed", "failed", "cancelled"].includes(run.status),
+  );
+  const durations = filteredRuns
+    .map(runDurationMs)
+    .filter((value): value is number => value !== null);
+  const successRate = terminalRuns.length
+    ? Math.round(
+        (terminalRuns.filter((run) => run.status === "completed").length /
+          terminalRuns.length) * 100,
+      ) + "%"
+    : "—";
+  const averageDuration = durations.length
+    ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length)
+    : null;
+  const totalTokens = filteredRuns.reduce((sum, run) => sum + runTokens(run), 0);
+
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="modal modal-runs" onMouseDown={(event) => event.stopPropagation()}>
@@ -181,40 +356,94 @@ function RunHistoryPanel({
           <div>
             <span className="eyebrow">Agent diagnostics</span>
             <h2>Run history</h2>
-            <p>Open the trace for any completed, failed, or cancelled Run.</p>
+            <p>Compare outcomes, usage, and latency across this Agent's runs.</p>
           </div>
-          <button type="button" onClick={onClose}>×</button>
+          <button type="button" className="modal-close" onClick={onClose} aria-label="Close">×</button>
         </div>
         {runs.length === 0 ? (
           <p className="trace-empty">This Agent has not run yet.</p>
         ) : (
-          <div className="run-history-list">
-            {runs.map((run) => {
-              const terminal = ["completed", "failed", "cancelled"].includes(run.status);
-              return (
-                <article className="run-history-row" key={run.id}>
-                  <div className="run-history-main">
-                    <div className="run-history-meta">
-                      <span className={"run-status run-status-" + run.status}>{run.status}</span>
-                      <span>{formatTime(run.createdAt)}</span>
-                      <span>{formatRunDuration(run)}</span>
-                      <span>{formatRunUsage(run)}</span>
-                    </div>
-                    <p>{run.prompt}</p>
-                    {run.error && <span className="run-history-error">{run.error}</span>}
-                  </div>
-                  <button
-                    type="button"
-                    className="button button-ghost"
-                    disabled={!terminal}
-                    onClick={() => onTrace(run.id)}
-                  >
-                    View trace
-                  </button>
-                </article>
-              );
-            })}
-          </div>
+          <>
+            <div className="run-controls">
+              <input
+                type="search"
+                aria-label="Search runs"
+                placeholder="Search prompts and errors…"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              <label className="compact-field">
+                <span>Status</span>
+                <select
+                  value={statusFilter}
+                  onChange={(event) =>
+                    setStatusFilter(event.target.value as "all" | AgentRun["status"])
+                  }
+                >
+                  <option value="all">All statuses</option>
+                  <option value="completed">Completed</option>
+                  <option value="failed">Failed</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
+              </label>
+              <label className="compact-field">
+                <span>Sort</span>
+                <select
+                  value={sort}
+                  onChange={(event) =>
+                    setSort(event.target.value as "newest" | "duration" | "tokens")
+                  }
+                >
+                  <option value="newest">Newest first</option>
+                  <option value="duration">Longest duration</option>
+                  <option value="tokens">Most tokens</option>
+                </select>
+              </label>
+            </div>
+            <div className="insight-grid run-insights">
+              <StatCard label="Runs" value={filteredRuns.length.toLocaleString()} detail="matching filters" />
+              <StatCard label="Success" value={successRate} detail="terminal runs" />
+              <StatCard label="Avg. duration" value={formatDuration(averageDuration)} />
+              <StatCard label="Total tokens" value={totalTokens.toLocaleString()} />
+            </div>
+            <div className="result-caption">
+              Showing {filteredRuns.length} of {runs.length} runs
+            </div>
+            {filteredRuns.length === 0 ? (
+              <div className="filtered-empty">
+                <strong>No matching runs</strong>
+                <span>Try a different status or search term.</span>
+              </div>
+            ) : (
+              <div className="run-history-list">
+                {filteredRuns.map((run) => {
+                  const terminal = ["completed", "failed", "cancelled"].includes(run.status);
+                  return (
+                    <article className="run-history-row" key={run.id}>
+                      <div className="run-history-main">
+                        <div className="run-history-meta">
+                          <span className={"run-status run-status-" + run.status}>{run.status}</span>
+                          <span>{formatTime(run.createdAt)}</span>
+                          <span>{formatRunDuration(run)}</span>
+                          <span>{formatRunUsage(run)}</span>
+                        </div>
+                        <p>{run.prompt}</p>
+                        {run.error && <span className="run-history-error">{run.error}</span>}
+                      </div>
+                      <button
+                        type="button"
+                        className="button button-ghost"
+                        disabled={!terminal}
+                        onClick={() => onTrace(run.id)}
+                      >
+                        View trace
+                      </button>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

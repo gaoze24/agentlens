@@ -109,6 +109,10 @@ In the Web UI:
 The Agent can write files, run commands, and continue the same Codex session in
 later messages.
 
+Open **Runs** to compare status, duration, and token usage across historical
+runs. From **View trace**, filter model/tool/warning/error spans or use
+**Export JSON** to download a redacted audit bundle for the selected run.
+
 ### 5. Stop and resume
 
 Press `Ctrl+C` in the startup terminal. The script removes temporary Runtime
