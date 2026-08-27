@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
-import { RunCancelledError } from "./errors.js";
+import { RunCancelledError, RunnerExecutionError } from "./errors.js";
 import type {
   AgentRunner,
   RawCodexEvent,
@@ -204,21 +204,37 @@ export class CodexRunner implements AgentRunner {
         parseCodexEventLine(stdout.trim(), parsed);
       }
       if (active.cancelled) {
-        throw new RunCancelledError();
+        throw new RunCancelledError(parsed.rawEvents, parsed.usage);
       }
       if (active.timedOut) {
-        throw new Error("Codex timed out after " + this.config.codexTimeoutMs + " ms");
+        throw new RunnerExecutionError(
+          "Codex timed out after " + this.config.codexTimeoutMs + " ms",
+          parsed.rawEvents,
+          parsed.usage,
+        );
       }
       if (active.outputExceeded) {
-        throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
+        throw new RunnerExecutionError(
+          "Codex output exceeded CODEX_MAX_OUTPUT_BYTES",
+          parsed.rawEvents,
+          parsed.usage,
+        );
       }
       if (exitCode !== 0) {
         const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
-        throw new Error("Codex exited with code " + exitCode + ": " + detail);
+        throw new RunnerExecutionError(
+          "Codex exited with code " + exitCode + ": " + detail,
+          parsed.rawEvents,
+          parsed.usage,
+        );
       }
       const output = parsed.messages.at(-1)?.trim();
       if (!output) {
-        throw new Error("Codex completed without an agent message");
+        throw new RunnerExecutionError(
+          "Codex completed without an agent message",
+          parsed.rawEvents,
+          parsed.usage,
+        );
       }
       return {
         output,
@@ -226,6 +242,12 @@ export class CodexRunner implements AgentRunner {
         usage: parsed.usage,
         events: parsed.rawEvents,
       };
+    } catch (error) {
+      if (error instanceof RunnerExecutionError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new RunnerExecutionError(message, parsed.rawEvents, parsed.usage, {
+        cause: error,
+      });
     } finally {
       clearTimeout(timeout);
       if (active.forceKillTimer) clearTimeout(active.forceKillTimer);

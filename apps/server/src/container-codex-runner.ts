@@ -2,7 +2,7 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
-import { RunCancelledError } from "./errors.js";
+import { RunCancelledError, RunnerExecutionError } from "./errors.js";
 import type {
   AgentRunner,
   RawCodexEvent,
@@ -212,26 +212,44 @@ export class ContainerCodexRunner implements AgentRunner {
         child.once("close", (code) => resolve(code ?? 1));
       });
       if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed);
-      if (active.cancelled) throw new RunCancelledError();
+      if (active.cancelled) throw new RunCancelledError(parsed.rawEvents, parsed.usage);
       if (active.timedOut) {
-        throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
+        throw new RunnerExecutionError(
+          "Runtime timed out after " + this.config.codexTimeoutMs + " ms",
+          parsed.rawEvents,
+          parsed.usage,
+        );
       }
       if (active.outputExceeded) {
-        throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
+        throw new RunnerExecutionError(
+          "Codex output exceeded CODEX_MAX_OUTPUT_BYTES",
+          parsed.rawEvents,
+          parsed.usage,
+        );
       }
       if (exitCode !== 0) {
         const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
-        throw new Error(
-          this.config.containerEngine +
-            " Runtime exited with code " +
-            exitCode +
-            ": " +
-            detail,
+        throw new RunnerExecutionError(
+          this.config.containerEngine + " Runtime exited with code " + exitCode + ": " + detail,
+          parsed.rawEvents,
+          parsed.usage,
         );
       }
       const output = parsed.messages.at(-1)?.trim();
-      if (!output) throw new Error("Codex completed without an agent message");
+      if (!output) {
+        throw new RunnerExecutionError(
+          "Codex completed without an agent message",
+          parsed.rawEvents,
+          parsed.usage,
+        );
+      }
       return { output, threadId: parsed.threadId, usage: parsed.usage, events: parsed.rawEvents };
+    } catch (error) {
+      if (error instanceof RunnerExecutionError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new RunnerExecutionError(message, parsed.rawEvents, parsed.usage, {
+        cause: error,
+      });
     } finally {
       clearTimeout(timeout);
       this.active.delete(request.agentId);
