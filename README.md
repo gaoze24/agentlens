@@ -43,9 +43,12 @@ JSON** hands the trace to an external tool.
 successful and one failing Run, so the middleware is inspectable without a model
 endpoint.
 
-Read [docs/GLASS_BOX.md](docs/GLASS_BOX.md) for the design, trust boundary,
-retention policy, three-minute demo script, automated-evidence map, and known
-limitations.
+**Start here:**
+[docs/ONE_PAGE_ARCHITECTURE.md](docs/ONE_PAGE_ARCHITECTURE.md) is the one-page
+diagram — middleware, data flow, trust boundaries, and the numbered
+instrumentation, enforcement, and recovery points.
+[docs/GLASS_BOX.md](docs/GLASS_BOX.md) has the full design, retention policy,
+three-minute demo script, automated-evidence map, and known limitations.
 
 ## Screenshots
 
@@ -277,6 +280,7 @@ docker compose config
 
 ## Documentation
 
+- [One-page architecture diagram](docs/ONE_PAGE_ARCHITECTURE.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Glass Box middleware: design, demo, and limitations](docs/GLASS_BOX.md)
 - [Local POC](docs/LOCAL_POC.md)

@@ -3,6 +3,10 @@
 This is the middleware capability this team designed on top of the Agent
 Launchpad Starter Kit. It is the document to read alongside the code.
 
+For the single-page view of the same design — data flow, trust boundaries, and
+the numbered instrumentation, enforcement, and recovery points — see
+[ONE_PAGE_ARCHITECTURE.md](ONE_PAGE_ARCHITECTURE.md).
+
 ## The problem
 
 The Starter Kit records the *result* of an Agent Run — a status, an output
