@@ -133,6 +133,15 @@ export async function createApp(
     return { spans: service.getTrace(id) };
   });
 
+  app.get("/api/runs/:id/audit", async (request, reply) => {
+    const { id } = runIdParams.parse(request.params);
+    reply.header(
+      "Content-Disposition",
+      `attachment; filename="agentlens-run-${id}-audit.json"`,
+    );
+    return service.getAuditBundle(id);
+  });
+
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {

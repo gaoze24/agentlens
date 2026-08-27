@@ -126,3 +126,8 @@ other `/api/*` route.
 View the latest Run's trace from the Playground via **View trace**, or open
 **Runs** to inspect any historical Run and its trace. Trace access is available
 once a Run reaches a terminal state (`completed`, `failed`, or `cancelled`).
+The Run history view can filter and sort outcomes, prompts, duration, and token
+usage. `GET /api/runs/:id/audit` builds a versioned JSON evidence bundle with
+the redacted Run, correlated spans, duration, usage, and diagnostic counts.
+The export path applies redaction again at serialization time as defense in
+depth and never includes Agent instructions or workspace paths.
