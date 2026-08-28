@@ -39,6 +39,10 @@ errors) and count-badged filters that keep the tree connected; **Runs** lists
 history with status filter, search, and sorting; **Export JSON** downloads the
 audit bundle.
 
+**No Ark credentials?** `npm run demo:seed` loads a fixture Agent with one
+successful and one failing Run, so the middleware is inspectable without a model
+endpoint.
+
 **Start here:**
 [docs/ONE_PAGE_ARCHITECTURE.md](docs/ONE_PAGE_ARCHITECTURE.md) is the one-page
 diagram — data flow, trust boundaries, and the numbered instrumentation,

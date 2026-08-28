@@ -124,6 +124,26 @@ rewrites the whole file on every mutation:
 Deleting an Agent deletes its spans along with its Runs and messages, matching
 the existing workspace-archival policy.
 
+## Seeded demo data
+
+`npm run demo:seed` writes a fixture Agent with two complete traces into the
+configured `APP_DATA_DIR`, so a reviewer can inspect the middleware without a
+BytePlus ModelArk key. It refuses to overwrite a store that already holds Agents
+unless `--force` is passed.
+
+```bash
+npm run demo:seed              # seed the default .data/ store
+npm run demo:seed -- --force   # replace an existing store
+```
+
+The fixture is built to exercise every classification path: a successful Run
+(reasoning, file writes, a passing command, a completed model turn) and a
+failing Run (a started-but-never-completed turn, a file write, a failing
+command, the benign model-metadata diagnostic downgraded to `warning`, and the
+`runtime.error` that ended it). Every filter in the trace view is non-empty, the
+stat cards are populated, and one span carries planted secrets already stored as
+`[REDACTED]`.
+
 ## Demo script (three minutes)
 
 The failure case below is deliberately an **Agent-caused failure**, not a
@@ -131,6 +151,9 @@ platform misconfiguration. Breaking `ARK_MODEL` would fail the Run before the
 Agent does any work, producing a two-span trace that demonstrates nothing. The
 point of this middleware is finding a failing step *among real work*, so the
 demo has to produce real work first.
+
+**Without Ark credentials?** Run `npm run demo:seed`, start the server, and
+steps 3, 5, 6 and 8 all work against the fixture.
 
 1. **Baseline.** `npm run poc`, open <http://localhost:3000>, create an Agent,
    and show its `ready` lifecycle state.
@@ -217,5 +240,6 @@ submission.
   access use the same shared bearer token as the rest of the API. Per-principal
   authorization belongs with an identity capability, which this team did not
   build.
-- **A reviewer needs Ark credentials.** There is no seeded fixture, so the
-  middleware cannot be inspected without a working model endpoint.
+- **The seeded fixture is static.** `npm run demo:seed` makes the middleware
+  inspectable without credentials, but its Runs are fixtures: they exercise the
+  trace, classification, summary, and export paths, not the Runtime.
