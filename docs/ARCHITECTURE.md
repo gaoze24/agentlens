@@ -140,9 +140,11 @@ Deleting an Agent deletes its spans along with its Runs and messages, matching
 the existing workspace-archival policy.
 
 **Trust boundary and redaction.** `trace.ts`'s `redactSecrets` strips the
-configured Ark API key and any `Bearer <token>` pattern from every span
-attribute and error message before it is written to disk, and truncates
-oversized strings. The Ark key itself is only ever handed to the Runtime as
+configured Ark API key, a set of credential *shapes* the process was never
+configured with (`Bearer`/`Basic` headers, `sk-`, `ghp_`, `github_pat_`,
+`xoxb-`, `AIza`, AWS `AKIA`/`ASIA` ids, PEM private-key blocks, and the values
+of sensitive `key=value` assignments), and oversized strings from every span
+attribute and error message before it is written to disk. The Ark key itself is only ever handed to the Runtime as
 an environment variable (`childEnvironment()` in both runners) — it is never
 part of a Codex JSON event line, so it cannot flow into a span in the first
 place; the string-match redaction is defense in depth. `GET

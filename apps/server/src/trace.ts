@@ -3,9 +3,39 @@ import type { RawCodexEvent, SpanStatus, TraceSpan } from "./types.js";
 
 const MAX_STRING_LENGTH = 4_096;
 const TRUNCATION_SUFFIX = "…[truncated]";
-const BEARER_PATTERN = /Bearer\s+[A-Za-z0-9._~+/-]+=*/gi;
 const MODEL_METADATA_FALLBACK_PATTERN =
   /Model metadata for .+ not found\b/i;
+
+/**
+ * Credential shapes worth catching even when the value is not one of the
+ * secrets this process was configured with. An Agent can discover a credential
+ * inside its own workspace and echo it to stdout, where exact-match redaction
+ * against the Ark key would never see it -- and the audit bundle is designed
+ * to leave the machine, so a miss here is a disclosure rather than a local
+ * blemish.
+ */
+const CREDENTIAL_PATTERNS: readonly { pattern: RegExp; replacement: string }[] = [
+  { pattern: /Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, replacement: "Bearer [REDACTED]" },
+  { pattern: /Basic\s+[A-Za-z0-9+/]{8,}={0,2}/gi, replacement: "Basic [REDACTED]" },
+  // OpenAI-style, GitHub, Slack, Google, and AWS access key ids.
+  { pattern: /\bsk-[A-Za-z0-9_-]{16,}/g, replacement: "[REDACTED]" },
+  { pattern: /\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{16,}/g, replacement: "[REDACTED]" },
+  { pattern: /\bgithub_pat_[A-Za-z0-9_]{20,}/g, replacement: "[REDACTED]" },
+  { pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, replacement: "[REDACTED]" },
+  { pattern: /\bAIza[A-Za-z0-9_-]{30,}/g, replacement: "[REDACTED]" },
+  { pattern: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, replacement: "[REDACTED]" },
+  // PEM private key blocks, body included.
+  {
+    pattern: /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g,
+    replacement: "[REDACTED PRIVATE KEY]",
+  },
+  // Sensitive assignments: the name is kept, the value is not.
+  {
+    pattern:
+      /([A-Za-z0-9_.-]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token))(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+    replacement: "$1$2[REDACTED]",
+  },
+];
 
 export function redactSecrets(value: string, secrets: readonly string[]): string {
   let result = value;
@@ -13,7 +43,9 @@ export function redactSecrets(value: string, secrets: readonly string[]): string
     if (!secret) continue;
     result = result.split(secret).join("[REDACTED]");
   }
-  result = result.replace(BEARER_PATTERN, "Bearer [REDACTED]");
+  for (const { pattern, replacement } of CREDENTIAL_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
   if (result.length > MAX_STRING_LENGTH) {
     result = result.slice(0, MAX_STRING_LENGTH) + TRUNCATION_SUFFIX;
   }

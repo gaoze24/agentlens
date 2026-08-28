@@ -313,3 +313,78 @@ describe("pruneSpans", () => {
     expect(pruned.every((span) => span.runId === "new")).toBe(true);
   });
 });
+
+describe("credential pattern redaction", () => {
+  const leaked: [string, string][] = [
+    ["OpenAI-style key", "sk-abcdefghijklmnopqrstuvwxyz012345"],
+    ["GitHub token", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"],
+    ["GitHub fine-grained token", "github_pat_abcdefghijklmnopqrstuv0123456789"],
+    ["Slack token", "xoxb-1234567890-abcdefghijkl"],
+    ["Google API key", "AIzaSyA1234567890abcdefghijklmnopqrstuvw"],
+    ["AWS access key id", "AKIAIOSFODNN7EXAMPLE"],
+  ];
+
+  it.each(leaked)("redacts a %s the process was never configured with", (_label, secret) => {
+    const result = redactSecrets("the agent printed " + secret + " to stdout", []);
+    expect(result).not.toContain(secret);
+    expect(result).toContain("[REDACTED]");
+  });
+
+  it("redacts a PEM private key block including its body", () => {
+    const key = [
+      "-----BEGIN RSA PRIVATE KEY-----",
+      "MIIEowIBAAKCAQEAxGxQ0000000000000000000000000",
+      "-----END RSA PRIVATE KEY-----",
+    ].join("\n");
+    const result = redactSecrets("found a key:\n" + key, []);
+    expect(result).not.toContain("MIIEowIBAAKCAQEA");
+    expect(result).toContain("[REDACTED PRIVATE KEY]");
+  });
+
+  it("redacts the value of a sensitive assignment but keeps its name", () => {
+    const result = redactSecrets('DB_PASSWORD="hunter2" and api_key=abcd1234', []);
+    expect(result).not.toContain("hunter2");
+    expect(result).not.toContain("abcd1234");
+    expect(result).toContain("PASSWORD");
+    expect(result).toContain("api_key");
+  });
+
+  it("redacts a Basic authorization header", () => {
+    expect(redactSecrets("Authorization: Basic dXNlcjpwYXNzd29yZA==", [])).toBe(
+      "Authorization: Basic [REDACTED]",
+    );
+  });
+
+  it("leaves ordinary prose and command output untouched", () => {
+    const prose = "Ran the test suite: 3 assertions passed in 1.2s.";
+    expect(redactSecrets(prose, [])).toBe(prose);
+  });
+
+  it("still lets the known model metadata fallback message through for classification", () => {
+    // buildEventSpan matches this AFTER redaction to downgrade it to a
+    // warning, so redaction must not disturb the phrase it keys on.
+    const message = redactSecrets("Model metadata for ep-abc123 not found.", []);
+    expect(message).toBe("Model metadata for ep-abc123 not found.");
+  });
+
+  it("redacts a credential the Agent echoes into a tool call payload", () => {
+    const spanContext = { runId: "run-1", agentId: "agent-1", parentSpanId: "process-1" };
+    const events: RawCodexEvent[] = [
+      {
+        observedAt: "2026-01-01T00:00:00.100Z",
+        event: {
+          type: "item.completed",
+          item: {
+            id: "i1",
+            type: "command_execution",
+            command: "cat .env",
+            aggregated_output: "AWS_KEY=AKIAIOSFODNN7EXAMPLE\nOPENAI=sk-abcdefghijklmnopqrstuvwxyz012345",
+          },
+        },
+      },
+    ];
+    const serialized = JSON.stringify(buildEventSpans(events, spanContext, []));
+    expect(serialized).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(serialized).not.toContain("sk-abcdefghijklmnopqrstuvwxyz012345");
+  });
+});

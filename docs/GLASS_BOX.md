@@ -85,11 +85,24 @@ capability most needs to explain.
 
 ## Redaction and trust boundary
 
-`redactSecrets` strips the configured Ark API key and any `Bearer <token>`
-pattern, and truncates oversized strings, before anything is written to disk. It
-is applied to every span attribute (recursively through nested objects and
-arrays), every span error message, and `AgentRun.error` / `Agent.lastError`,
-which surface in the UI and API.
+`redactSecrets` runs before anything is written to disk. It strips, in order:
+
+1. every configured secret (the Ark API key) by exact match;
+2. credential *shapes* the process was never told about — `Bearer` and `Basic`
+   authorization headers, `sk-`, `ghp_`/`gho_`/`ghs_`/`github_pat_`, `xoxb-`,
+   `AIza`, AWS `AKIA`/`ASIA` key ids, PEM private-key blocks including their
+   body, and the value of any `*password`/`*secret`/`*api_key`/`*token`
+   assignment (the name is kept, the value is not);
+3. anything left over the length budget.
+
+Step 2 matters because the Agent can *discover* a credential inside its own
+workspace and echo it to stdout, where exact-match redaction against the Ark key
+would never see it — and the audit bundle is built to be shared, so a miss there
+is a disclosure rather than a local blemish.
+
+Redaction is applied to every span attribute (recursively through nested objects
+and arrays), every span error message, and `AgentRun.error` /
+`Agent.lastError`, which surface in the UI and API.
 
 The Ark key reaches the Runtime only as an environment variable
 (`childEnvironment()` in both runners) and is never part of a Codex JSON event,
@@ -168,6 +181,8 @@ submission.
 | An item that never completes is a warning | `trace.test.ts` — "marks an item with no completion event as a warning" |
 | Benign diagnostics are not errors | `trace.test.ts` — "downgrades the known model metadata fallback event to a warning" |
 | Redaction across nested payloads and batches | `trace.test.ts` — `redactSecrets`, `redactAttributes`, "never leaks a planted secret" |
+| Unconfigured credential shapes are redacted | `trace.test.ts` — "credential pattern redaction" |
+| Redaction does not disturb warning classification | `trace.test.ts` — "still lets the known model metadata fallback message through" |
 | Export re-redacts and summarizes | `audit.test.ts` — "summarizes a run and redacts secrets again before export" |
 | API routes require the shared token | `app.test.ts` — "protects API routes with the configured shared token" |
 
@@ -183,12 +198,10 @@ submission.
   written when the turn ends.
 - **No timeline visualisation.** Durations are shown as text per span. The data
   needed for a proportional timeline is present.
-- **Redaction is narrow string-matching.** It covers the configured Ark key and
-  `Bearer` tokens. A credential in another shape — `sk-`, `ghp_`, an AWS key id,
-  a PEM block, a `password=` assignment — that the Agent discovers in its own
-  workspace and echoes to stdout would not be recognised, and would reach the
-  exported bundle. This is the most important known gap, because the bundle is
-  designed to be shared.
+- **Redaction is pattern-matching.** It covers configured secrets plus the
+  credential shapes listed above. A secret in a shape not on that list, or one
+  that is base64- or hex-encoded before being printed, would still not be
+  recognised. Pattern coverage is a moving target, not a guarantee.
 - **Payloads are stored verbatim.** Span attributes hold the whole raw Codex
   event, so a `file_change` item can carry substantial file content into the
   store and the export. There is no capture-level control to summarise them.
