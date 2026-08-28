@@ -12,15 +12,40 @@ Volcengine ECS.
 > hardened sandbox middleware. Do not use production data or credentials.
 > See [SECURITY.md](SECURITY.md).
 
-## Selected hackathon track
+## Team-designed middleware: Glass Box trace and audit
 
-**Glass Box: trace and audit.** Every Agent Run now produces a correlated,
-redacted trace (Run → Codex process → individual Codex events), viewable from
-the Playground via **View trace** on any completed, failed, or cancelled Run.
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#observability-glass-box-track)
-for the design and trust boundary, and `apps/server/src/trace.test.ts` /
-`apps/server/src/agent-service.test.ts` for automated evidence covering both
-a successful run and a failing run.
+**The problem.** The Starter Kit records the *result* of an Agent Run — status,
+output, error — and nothing about how it got there. Codex reasons, runs
+commands, and edits files across many steps inside a disposable container whose
+stdout is parsed for one final message and then discarded. When a Run fails, the
+operator sees `Codex exited with code 1: boom` and cannot tell which step
+failed, what the Agent had already changed, or what the Run cost.
+
+**The capability.** Every Run emits a correlated, redacted trace — a tree of
+spans covering the Run, the Runtime invocation, and each Codex item, with
+`item.started`/`item.completed` paired so a step carries its real duration — plus
+a versioned, re-redacted **audit bundle** that can leave the machine as
+evidence. The root span is persisted before the Runtime is invoked, so a Run
+that is still executing, or one interrupted by a crash, still has a trace.
+
+**Where it runs.** `AgentService.executeRun` (Fastify control plane) owns the
+trace; `apps/server/src/trace.ts` classifies and redacts it; `audit.ts`
+summarises it; `GET /api/runs/:id/trace` and `GET /api/runs/:id/audit` serve it
+behind the same auth hook as every other route.
+
+**In the browser.** **View trace** opens the span tree with stat cards
+(duration, tokens in/out/cached, tool calls and model turns, warnings and
+errors) and count-badged filters that keep the tree connected; **Runs** lists
+history with status filter, search, and sorting; **Export JSON** downloads the
+audit bundle.
+
+**Start here:**
+[docs/ONE_PAGE_ARCHITECTURE.md](docs/ONE_PAGE_ARCHITECTURE.md) is the one-page
+diagram — data flow, trust boundaries, and the numbered instrumentation,
+enforcement, and recovery points.
+[docs/GLASS_BOX.md](docs/GLASS_BOX.md) has the problem statement, design, span
+lifecycle and crash recovery, retention policy, a three-minute demo script, the
+automated-evidence map, and known limitations.
 
 ## Screenshots
 
@@ -255,6 +280,8 @@ docker compose config
 
 ## Documentation
 
+- [One-page architecture diagram](docs/ONE_PAGE_ARCHITECTURE.md)
+- [Glass Box middleware: problem, design, demo, and limitations](docs/GLASS_BOX.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)

@@ -80,7 +80,11 @@ the stored Codex thread, and escalate termination after a grace period.
 | Kill Switch | `AgentRunner` | Add threat-specific policy or a stronger sandbox. |
 
 The current container or ECS instance is the POC trust boundary. Ordinary
-containers are not hardened multi-tenant isolation.
+containers are not hardened multi-tenant isolation. See
+[ONE_PAGE_ARCHITECTURE.md](ONE_PAGE_ARCHITECTURE.md) for the trust boundaries
+drawn out with the instrumentation and enforcement points marked, and
+[GLASS_BOX.md](GLASS_BOX.md) for the problem statement, demo script, and
+limitations.
 
 ## Observability (Glass Box track)
 
