@@ -421,3 +421,96 @@ export function buildPolicySpan(
       : null,
   };
 }
+
+/**
+ * A span for an item Codex has started but not finished. It is written while
+ * the Run is still executing, so the browser can show a step the moment it
+ * begins rather than only once the turn ends.
+ */
+function openEventSpan(
+  raw: RawCodexEvent,
+  context: SpanIdentity & { parentSpanId: string },
+  secrets: readonly string[],
+): TraceSpan {
+  const category = categoryForEvent(raw.event);
+  return {
+    id: randomUUID(),
+    traceId: context.traceId,
+    runId: context.runId,
+    agentId: context.agentId,
+    agentVersion: context.agentVersion,
+    sessionId: context.sessionId,
+    actorType: "agent",
+    parentSpanId: context.parentSpanId,
+    category,
+    name: nameForEvent(raw.event, category),
+    status: "running",
+    startedAt: raw.observedAt,
+    completedAt: null,
+    durationMs: null,
+    attributes: redactAttributes(raw.event, secrets),
+    errorMessage: null,
+  };
+}
+
+/** Spans to insert, and spans to replace by id, after one observed event. */
+export interface LiveSpanUpdate {
+  appended: TraceSpan[];
+  updated: TraceSpan[];
+}
+
+const NO_LIVE_SPANS: LiveSpanUpdate = { appended: [], updated: [] };
+
+/**
+ * The streaming counterpart to {@link buildEventSpans}. `buildEventSpans` sees
+ * a whole Run at once and can pair `item.started` with `item.completed` by
+ * looking ahead; a live trace has no lookahead, so an started item is written
+ * open and closed in place when its completion arrives.
+ *
+ * Past `maxEventSpans` this stops emitting rather than dropping the oldest
+ * spans: the live view is a tail the operator is already watching, and the
+ * authoritative set written when the Run ends applies the real truncation
+ * policy, including its notice span.
+ */
+export class LiveTraceWriter {
+  private readonly openByItemId = new Map<string, TraceSpan>();
+  private emitted = 0;
+
+  constructor(
+    private readonly context: SpanIdentity & { parentSpanId: string },
+    private readonly secrets: readonly string[],
+    private readonly maxEventSpans: number = Number.POSITIVE_INFINITY,
+  ) {}
+
+  ingest(raw: RawCodexEvent): LiveSpanUpdate {
+    const type = raw.event.type;
+    const itemId = itemIdForEvent(raw.event);
+
+    if (type === "item.started" && itemId) {
+      if (!this.reserve()) return NO_LIVE_SPANS;
+      const span = openEventSpan(raw, this.context, this.secrets);
+      this.openByItemId.set(itemId, span);
+      return { appended: [span], updated: [] };
+    }
+
+    if (type === "item.completed" && itemId) {
+      const open = this.openByItemId.get(itemId);
+      if (open) {
+        this.openByItemId.delete(itemId);
+        // Same span id and start time, so the row the operator is watching is
+        // closed in place instead of being duplicated.
+        const closed = buildEventSpan(raw, this.context, this.secrets, open.startedAt);
+        return { appended: [], updated: [{ ...closed, id: open.id }] };
+      }
+    }
+
+    if (!this.reserve()) return NO_LIVE_SPANS;
+    return { appended: [buildEventSpan(raw, this.context, this.secrets)], updated: [] };
+  }
+
+  private reserve(): boolean {
+    if (this.emitted >= this.maxEventSpans) return false;
+    this.emitted += 1;
+    return true;
+  }
+}

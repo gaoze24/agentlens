@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  LiveTraceWriter,
   buildEventSpans,
   buildProcessSpan,
   buildRunSpan,
@@ -402,5 +403,84 @@ describe("credential pattern redaction", () => {
     const serialized = JSON.stringify(buildEventSpans(events, spanContext, []));
     expect(serialized).not.toContain("AKIAIOSFODNN7EXAMPLE");
     expect(serialized).not.toContain("sk-abcdefghijklmnopqrstuvwxyz012345");
+  });
+});
+
+describe("LiveTraceWriter", () => {
+  const context = { ...IDENTITY, parentSpanId: "process-1" };
+  const event = (
+    type: string,
+    item: Record<string, unknown>,
+    observedAt: string,
+  ): RawCodexEvent => ({ observedAt, event: { type, item } });
+
+  it("opens a span when a step starts and closes the same span when it ends", () => {
+    const writer = new LiveTraceWriter(context, [SECRET]);
+    const opened = writer.ingest(
+      event(
+        "item.started",
+        { id: "i1", type: "command_execution", command: `curl -H "Bearer ${SECRET}"` },
+        "2026-01-01T00:00:00.000Z",
+      ),
+    );
+
+    expect(opened.appended).toHaveLength(1);
+    const open = opened.appended[0]!;
+    expect(open.status).toBe("running");
+    expect(open.completedAt).toBeNull();
+    expect(open.category).toBe("tool.call");
+    // Live spans leave the machine the same way stored ones do.
+    expect(JSON.stringify(open.attributes)).not.toContain(SECRET);
+
+    const closed = writer.ingest(
+      event(
+        "item.completed",
+        { id: "i1", type: "command_execution", exit_code: 0 },
+        "2026-01-01T00:00:02.000Z",
+      ),
+    );
+
+    // Closed in place: the row the operator is watching, not a second row.
+    expect(closed.appended).toEqual([]);
+    expect(closed.updated).toHaveLength(1);
+    const done = closed.updated[0]!;
+    expect(done.id).toBe(open.id);
+    expect(done.status).toBe("ok");
+    expect(done.startedAt).toBe(open.startedAt);
+    expect(done.durationMs).toBe(2_000);
+  });
+
+  it("emits a point span for a completion whose start was never seen", () => {
+    const writer = new LiveTraceWriter(context, []);
+    const result = writer.ingest(
+      event(
+        "item.completed",
+        { id: "orphan", type: "file_change" },
+        "2026-01-01T00:00:01.000Z",
+      ),
+    );
+
+    expect(result.updated).toEqual([]);
+    expect(result.appended).toHaveLength(1);
+    expect(result.appended[0]?.status).toBe("ok");
+  });
+
+  it("stops emitting past the per-Run cap but still closes what it opened", () => {
+    const writer = new LiveTraceWriter(context, [], 1);
+    const first = writer.ingest(
+      event("item.started", { id: "i1", type: "reasoning" }, "2026-01-01T00:00:00.000Z"),
+    );
+    const second = writer.ingest(
+      event("item.started", { id: "i2", type: "reasoning" }, "2026-01-01T00:00:01.000Z"),
+    );
+    const closesFirst = writer.ingest(
+      event("item.completed", { id: "i1", type: "reasoning" }, "2026-01-01T00:00:02.000Z"),
+    );
+
+    expect(first.appended).toHaveLength(1);
+    expect(second.appended).toEqual([]);
+    // A span already on screen is still finished rather than left running.
+    expect(closesFirst.updated).toHaveLength(1);
+    expect(closesFirst.updated[0]?.id).toBe(first.appended[0]?.id);
   });
 });

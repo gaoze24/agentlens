@@ -601,3 +601,55 @@ describe("Agent lifecycle", () => {
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
   });
 });
+
+describe("live trace", () => {
+  it("exposes a running step before the Runtime returns", async () => {
+    let release!: (result: RunnerResult) => void;
+    const pending = new Promise<RunnerResult>((resolve) => {
+      release = resolve;
+    });
+    const started: RawCodexEvent = {
+      observedAt: "2026-01-01T00:00:00.000Z",
+      event: {
+        type: "item.started",
+        item: { id: "i1", type: "command_execution", command: "npm test" },
+      },
+    };
+    const completed: RawCodexEvent = {
+      observedAt: "2026-01-01T00:00:01.500Z",
+      event: {
+        type: "item.completed",
+        item: { id: "i1", type: "command_execution", command: "npm test", exit_code: 0 },
+      },
+    };
+    const service = await makeService({
+      run: (request) => {
+        request.onEvent?.(started);
+        return pending;
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Live" });
+    const { run } = await service.sendMessage(agent.id, "run the suite");
+
+    // The step is inspectable while the turn is still executing.
+    await expect
+      .poll(() =>
+        service.getTrace(run.id).find((span) => span.category === "tool.call")?.status,
+      )
+      .toBe("running");
+    expect(service.getRun(run.id).status).toBe("running");
+
+    release({ output: "done", threadId: "t", usage: null, events: [started, completed] });
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    // The live span is superseded, not duplicated, by the authoritative set.
+    const toolSpans = service
+      .getTrace(run.id)
+      .filter((span) => span.category === "tool.call");
+    expect(toolSpans).toHaveLength(1);
+    expect(toolSpans[0]?.status).toBe("ok");
+    expect(toolSpans[0]?.durationMs).toBe(1_500);
+  });
+});

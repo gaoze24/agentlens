@@ -6,6 +6,7 @@ import { HttpError, RunCancelledError, RunnerExecutionError } from "./errors.js"
 import { JsonStore } from "./store.js";
 import { evaluateEvent } from "./policy.js";
 import {
+  LiveTraceWriter,
   buildEventSpans,
   buildPolicySpan,
   buildProcessSpan,
@@ -14,6 +15,7 @@ import {
   pruneSpans,
   redactSecrets,
 } from "./trace.js";
+import type { LiveSpanUpdate } from "./trace.js";
 import type {
   Agent,
   PolicyDecision,
@@ -211,7 +213,7 @@ export class AgentService {
     if (!agent) throw new HttpError(404, "Agent not found");
     const spans = snapshot.spans.filter((span) => span.runId === runId);
     const secrets = this.config.arkApiKey ? [this.config.arkApiKey] : [];
-    return buildAuditBundle(agent, run, spans, secrets);
+    return buildAuditBundle(agent, run, spans, secrets, this.config.costRates);
   }
 
   async sendMessage(
@@ -325,6 +327,7 @@ export class AgentService {
     await this.appendSpans([runSpan]);
     let processSpan: TraceSpan | null = null;
     const policySpans: TraceSpan[] = [];
+    const liveWrites = this.createLiveSpanQueue();
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
@@ -350,33 +353,45 @@ export class AgentService {
       });
       await this.appendSpans([processSpan]);
       const policyParent = processSpan.id;
+      // Spans are written as events arrive, so the trace is readable while the
+      // Run is still executing. The authoritative set is still rewritten when
+      // the Run ends; these are the same spans seen earlier.
+      const liveWriter = new LiveTraceWriter(
+        { ...identity, parentSpanId: policyParent },
+        secrets,
+        this.config.traceMaxEventSpansPerRun,
+      );
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
-        onEvent: this.config.policyEnabled
-          ? (event) => {
-              const decision = evaluateEvent(event, this.config.policyRules);
-              if (!decision) return;
-              policySpans.push(
-                buildPolicySpan(
-                  decision,
-                  { ...identity, parentSpanId: policyParent },
-                  secrets,
-                  event.observedAt,
-                ),
-              );
-              if (decision.decision === "deny") {
-                // Terminate at the Runtime boundary: removing the container
-                // stops the Agent mid-turn rather than reporting afterwards.
-                this.policyDenials.set(agentAtStart.id, decision);
-                void this.runner.cancel(agentAtStart.id).catch(() => undefined);
-              }
-            }
-          : undefined,
+        onEvent: (event) => {
+          liveWrites.record(liveWriter.ingest(event));
+          if (!this.config.policyEnabled) return;
+          const decision = evaluateEvent(event, this.config.policyRules);
+          if (!decision) return;
+          const policySpan = buildPolicySpan(
+            decision,
+            { ...identity, parentSpanId: policyParent },
+            secrets,
+            event.observedAt,
+          );
+          policySpans.push(policySpan);
+          // A denial is the span the operator most needs to see immediately.
+          liveWrites.record({ appended: [policySpan], updated: [] });
+          if (decision.decision === "deny") {
+            // Terminate at the Runtime boundary: removing the container
+            // stops the Agent mid-turn rather than reporting afterwards.
+            this.policyDenials.set(agentAtStart.id, decision);
+            void this.runner.cancel(agentAtStart.id).catch(() => undefined);
+          }
+        },
       });
       const completedAt = now();
+      // Any live write still in flight would otherwise land after the
+      // rewrite below and resurrect a span it just replaced.
+      await liveWrites.drain();
       const eventSpans = buildEventSpans(
         result.events ?? [],
         { ...identity, parentSpanId: processSpan.id },
@@ -420,6 +435,7 @@ export class AgentService {
       });
     } catch (error) {
       const completedAt = now();
+      await liveWrites.drain();
       // A Run stopped by policy was terminated by the platform, not abandoned
       // by an operator, so it is a failure with a stated cause.
       const denial = this.policyDenials.get(agentAtStart.id) ?? null;
@@ -493,6 +509,37 @@ export class AgentService {
         database.spans = pruneSpans(database.spans, this.config.traceRetentionRuns);
       });
     }
+  }
+
+  /**
+   * Serialises the writes an in-flight Run makes to the store. `onEvent` is
+   * synchronous and persisting is not, so updates are chained rather than
+   * raced, and `drain` gives the Run a point where every one has landed.
+   */
+  private createLiveSpanQueue(): {
+    record: (update: LiveSpanUpdate) => void;
+    drain: () => Promise<void>;
+  } {
+    let queue: Promise<void> = Promise.resolve();
+    return {
+      record: (update) => {
+        if (update.appended.length === 0 && update.updated.length === 0) return;
+        queue = queue
+          .then(() =>
+            this.store.mutate((database) => {
+              for (const span of update.updated) {
+                const index = database.spans.findIndex((item) => item.id === span.id);
+                if (index >= 0) database.spans[index] = span;
+                else database.spans.push(span);
+              }
+              database.spans.push(...update.appended);
+            }),
+          )
+          // A trace that cannot be written must not fail the Run it describes.
+          .catch(() => undefined);
+      },
+      drain: () => queue,
+    };
   }
 
   private async appendSpans(spans: readonly TraceSpan[]): Promise<void> {
