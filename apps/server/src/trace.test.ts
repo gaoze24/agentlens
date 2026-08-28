@@ -12,6 +12,15 @@ import type { RawCodexEvent } from "./types.js";
 
 const SECRET = "ark-secret-key-do-not-leak";
 
+/** Identifiers every span of a Run carries. */
+const IDENTITY = {
+  traceId: "trace-1",
+  runId: "run-1",
+  agentId: "agent-1",
+  agentVersion: 1,
+  sessionId: "thread-1",
+};
+
 describe("redactSecrets", () => {
   it("replaces every occurrence of a known secret", () => {
     const result = redactSecrets(`key=${SECRET} again=${SECRET}`, [SECRET]);
@@ -53,9 +62,9 @@ describe("redactAttributes", () => {
 describe("span construction", () => {
   it("builds a run span with no parent", () => {
     const span = buildRunSpan({
-      runId: "run-1",
-      agentId: "agent-1",
+      ...IDENTITY,
       promptLength: 12,
+      promptPreview: "write a cli",
       startedAt: "2026-01-01T00:00:00.000Z",
     });
     expect(span.parentSpanId).toBeNull();
@@ -66,19 +75,22 @@ describe("span construction", () => {
 
   it("links a process span to its parent run span", () => {
     const runSpan = buildRunSpan({
-      runId: "run-1",
-      agentId: "agent-1",
+      ...IDENTITY,
       promptLength: 12,
+      promptPreview: "write a cli",
       startedAt: "2026-01-01T00:00:00.000Z",
     });
     const processSpan = buildProcessSpan({
-      runId: "run-1",
-      agentId: "agent-1",
+      ...IDENTITY,
       parentSpanId: runSpan.id,
       startedAt: "2026-01-01T00:00:01.000Z",
       sandboxMode: "workspace-write",
       runtimeProvider: "container",
       containerEngine: "docker",
+      model: "ep-test",
+      modelBaseUrl: "https://ark.example/api/v3",
+      runtimeImage: "volc-agent-runtime:local",
+      resourceLimits: { cpus: 2, memory: "2g", pids: 256 },
     });
     expect(processSpan.parentSpanId).toBe(runSpan.id);
     expect(processSpan.attributes.containerEngine).toBe("docker");
@@ -86,9 +98,9 @@ describe("span construction", () => {
 
   it("computes duration and status when a span completes successfully", () => {
     const span = buildRunSpan({
-      runId: "run-1",
-      agentId: "agent-1",
+      ...IDENTITY,
       promptLength: 1,
+      promptPreview: "x",
       startedAt: "2026-01-01T00:00:00.000Z",
     });
     const completed = completeSpan(span, "ok", "2026-01-01T00:00:02.500Z");
@@ -99,9 +111,9 @@ describe("span construction", () => {
 
   it("marks a cancelled span distinctly from a failed one", () => {
     const span = buildRunSpan({
-      runId: "run-1",
-      agentId: "agent-1",
+      ...IDENTITY,
       promptLength: 1,
+      promptPreview: "x",
       startedAt: "2026-01-01T00:00:00.000Z",
     });
     const cancelled = completeSpan(span, "cancelled", "2026-01-01T00:00:01.000Z", null);
@@ -114,7 +126,7 @@ describe("span construction", () => {
 });
 
 describe("buildEventSpans", () => {
-  const context = { runId: "run-1", agentId: "agent-1", parentSpanId: "process-1" };
+  const context = { ...IDENTITY, parentSpanId: "process-1" };
 
   it("categorizes an agent_message item as a model.message span", () => {
     const events: RawCodexEvent[] = [
@@ -251,7 +263,7 @@ describe("buildEventSpans", () => {
 });
 
 describe("event span capping", () => {
-  const context = { runId: "run-1", agentId: "agent-1", parentSpanId: "process-1" };
+  const context = { ...IDENTITY, parentSpanId: "process-1" };
   const events = (count: number): RawCodexEvent[] =>
     Array.from({ length: count }, (_, index) => ({
       observedAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
@@ -284,8 +296,12 @@ describe("event span capping", () => {
 describe("pruneSpans", () => {
   const spanFor = (runId: string, startedAt: string, parentSpanId: string | null = null) => ({
     id: runId + startedAt,
+    traceId: runId,
     runId,
     agentId: "agent-1",
+    agentVersion: 1,
+    sessionId: null,
+    actorType: "agent" as const,
     parentSpanId,
     category: "orchestration",
     name: "run.orchestration",
@@ -368,7 +384,7 @@ describe("credential pattern redaction", () => {
   });
 
   it("redacts a credential the Agent echoes into a tool call payload", () => {
-    const spanContext = { runId: "run-1", agentId: "agent-1", parentSpanId: "process-1" };
+    const spanContext = { ...IDENTITY, parentSpanId: "process-1" };
     const events: RawCodexEvent[] = [
       {
         observedAt: "2026-01-01T00:00:00.100Z",

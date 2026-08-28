@@ -36,6 +36,24 @@ bundle** that can leave the machine as evidence.
 | Process | `runtime.process` | One Runtime invocation: sandbox mode, runtime provider, container engine, token usage. |
 | Event | `model.*`, `tool.call`, `runtime.warning`, `runtime.error`, `unknown.*` | One Codex item, with its redacted payload as attributes. |
 
+### Stable identifiers
+
+Every span stands alone: it carries the identity of what produced it, so a span
+lifted out of the store is still interpretable.
+
+| Field | Meaning |
+| --- | --- |
+| `traceId` | Correlates every span of one Run. Distinct from `runId` so an external tracer can join on it even if Runs are later retried or split. |
+| `runId`, `id`, `parentSpanId` | Run, span, and tree position. |
+| `agentId`, `agentVersion` | Which Agent, and which configuration version it executed against. `updateAgent` bumps the version only on a real change. |
+| `sessionId` | The Codex thread this Run continued, correlating spans across Runs in one conversation. |
+| `actorType` | `human` for the Run a person requested, `agent` for everything the Agent did beneath it, `system` for platform actions. |
+
+The root span records `promptPreview` (redacted, first 200 characters) as well as
+`promptLength`, and the process span records the model, its base URL, sandbox
+mode, runtime provider, container engine, runtime image, and resource limits —
+everything needed to diagnose a Run, and never the API key.
+
 Two classification details do real work:
 
 - **`item.started` and `item.completed` for the same item id are paired into one
@@ -66,6 +84,10 @@ Two classification details do real work:
 ## Span lifecycle and crash recovery
 
 A span is written twice: open, then closed.
+
+Cancellation is recorded as a relationship, not just a status: a closed span
+carries `cancelledBy` — `operator` (someone pressed Stop), `agent-deleted`, or
+`server-restart`.
 
 | Phase | Root span | Process span | Event spans |
 | --- | --- | --- | --- |
@@ -208,6 +230,12 @@ submission.
 | Redaction does not disturb warning classification | `trace.test.ts` — "still lets the known model metadata fallback message through" |
 | Export re-redacts and summarizes | `audit.test.ts` — "summarizes a run and redacts secrets again before export" |
 | API routes require the shared token | `app.test.ts` — "protects API routes with the configured shared token" |
+| One shared identity across a Run's spans | `agent-service.test.ts` — "stamps every span of a Run with one shared identity" |
+| Model and infrastructure metadata recorded | `agent-service.test.ts` — "records the model and infrastructure needed to diagnose a Run" |
+| Prompt preview is redacted | `agent-service.test.ts` — "keeps a redacted prompt preview on the root span" |
+| Session id correlates Runs in a thread | `agent-service.test.ts` — "carries the Codex session id so Runs in one thread correlate" |
+| Agent version bumps only on real change | `agent-service.test.ts` — "bumps the Agent version only on a real configuration change" |
+| Cancellation records its cause | `agent-service.test.ts` — "records what cancelled a Run rather than only that it was cancelled" |
 
 ## Limitations
 
@@ -225,6 +253,15 @@ submission.
   credential shapes listed above. A secret in a shape not on that list, or one
   that is base64- or hex-encoded before being printed, would still not be
   recognised. Pattern coverage is a moving target, not a guarantee.
+- **No retry relationships, and no cost or resource-consumption signals.** The
+  platform does not retry Runs, so there is nothing to link; token usage is
+  recorded but not priced, and container CPU/memory are recorded as configured
+  *limits* rather than measured consumption, which would need instrumentation
+  inside the Runtime.
+- **Span categories cover what this platform does.** `orchestration`,
+  `model.*`, `tool.call`, `runtime.*`. There is no memory-access, policy-
+  decision, human-approval, or cloud-operation category because no such
+  capability exists here to instrument.
 - **Payloads are stored verbatim.** Span attributes hold the whole raw Codex
   event, so a `file_change` item can carry substantial file content into the
   store and the export. There is no capture-level control to summarise them.

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
-import { RunnerExecutionError } from "./errors.js";
+import { RunCancelledError, RunnerExecutionError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RawCodexEvent, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -58,6 +58,142 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
+  it("stamps every span of a Run with one shared identity", async () => {
+    const service = await makeService({
+      run: async () => ({
+        output: "done",
+        threadId: "thread-9",
+        usage: null,
+        events: [
+          {
+            observedAt: new Date().toISOString(),
+            event: {
+              type: "item.completed",
+              item: { id: "i1", type: "command_execution", command: "ls" },
+            },
+          },
+        ],
+      }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Identified" });
+    const { run } = await service.sendMessage(agent.id, "list the files");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const spans = service.getTrace(run.id);
+    expect(spans.length).toBeGreaterThanOrEqual(3);
+    // One traceId correlates the whole Run, and it is not the runId.
+    const traceIds = new Set(spans.map((span) => span.traceId));
+    expect(traceIds.size).toBe(1);
+    expect([...traceIds][0]).not.toBe(run.id);
+    expect(spans.every((span) => span.runId === run.id)).toBe(true);
+    expect(spans.every((span) => span.agentVersion === 1)).toBe(true);
+
+    // The human asked; the Agent acted.
+    const root = spans.find((span) => span.parentSpanId === null);
+    expect(root?.actorType).toBe("human");
+    expect(
+      spans.filter((span) => span.id !== root?.id).every((span) => span.actorType === "agent"),
+    ).toBe(true);
+  });
+
+  it("records the model and infrastructure needed to diagnose a Run", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Diagnosable" });
+    const { run } = await service.sendMessage(agent.id, "hello");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const process = service
+      .getTrace(run.id)
+      .find((span) => span.category === "runtime.process");
+    expect(process?.attributes.model).toBe("ep-test");
+    expect(process?.attributes.modelBaseUrl).toBeTruthy();
+    expect(process?.attributes.sandboxMode).toBeTruthy();
+    // Never the credential itself.
+    expect(JSON.stringify(process?.attributes)).not.toContain("test-key");
+  });
+
+  it("keeps a redacted prompt preview on the root span", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Preview" });
+    const { run } = await service.sendMessage(
+      agent.id,
+      "deploy using Authorization: Bearer abc.def-123 please",
+    );
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const root = service.getTrace(run.id).find((span) => span.parentSpanId === null);
+    expect(root?.attributes.promptPreview).toContain("deploy using");
+    expect(root?.attributes.promptPreview).not.toContain("abc.def-123");
+  });
+
+  it("carries the Codex session id so Runs in one thread correlate", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Threaded" });
+    const first = await service.sendMessage(agent.id, "turn one");
+    await expect.poll(() => service.getRun(first.run.id).status).toBe("completed");
+    const second = await service.sendMessage(agent.id, "turn two");
+    await expect.poll(() => service.getRun(second.run.id).status).toBe("completed");
+
+    // The first Run had no thread yet; the second resumes the stored one.
+    expect(service.getTrace(first.run.id)[0]?.sessionId).toBeNull();
+    expect(service.getTrace(second.run.id)[0]?.sessionId).toBe("fake-thread");
+    // Different Runs, different traces.
+    expect(service.getTrace(first.run.id)[0]?.traceId).not.toBe(
+      service.getTrace(second.run.id)[0]?.traceId,
+    );
+  });
+
+  it("bumps the Agent version only on a real configuration change", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Versioned" });
+    expect(agent.version).toBe(1);
+    expect((await service.updateAgent(agent.id, { description: "now described" })).version)
+      .toBe(2);
+    // A no-op update is not a new version.
+    expect((await service.updateAgent(agent.id, { description: "now described" })).version)
+      .toBe(2);
+
+    const { run } = await service.sendMessage(agent.id, "hello");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(service.getTrace(run.id).every((span) => span.agentVersion === 2)).toBe(true);
+  });
+
+  it("records what cancelled a Run rather than only that it was cancelled", async () => {
+    let started!: () => void;
+    const begun = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    // A real runner rejects the in-flight run when cancelled; the fake has to
+    // do the same or stopAgent waits on a promise that never settles.
+    let abort!: (reason: unknown) => void;
+    const pending = new Promise<RunnerResult>((_resolve, reject) => {
+      abort = reject;
+    });
+    const service = await makeService({
+      run: () => {
+        started();
+        return pending;
+      },
+      cancel: async () => {
+        abort(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Stoppable" });
+    const { run } = await service.sendMessage(agent.id, "long task");
+    await begun;
+    await service.stopAgent(agent.id);
+    await expect.poll(() => service.getRun(run.id).status).toBe("cancelled");
+
+    const spans = service.getTrace(run.id);
+    expect(spans.every((span) => span.status === "cancelled")).toBe(true);
+    expect(spans[0]?.attributes.cancelledBy).toBe("operator");
+  });
+
+
   it("removes an Agent's spans when the Agent is deleted", async () => {
     const service = await makeService({
       run: async () => ({

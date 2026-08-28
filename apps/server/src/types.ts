@@ -2,8 +2,13 @@ export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
 
+/** Who performed the work a span represents. */
+export type ActorType = "human" | "agent" | "system";
+
 export interface Agent {
   id: string;
+  /** Bumped on every configuration change, so a trace pins the Agent it ran. */
+  version: number;
   name: string;
   description: string;
   instructions: string;
@@ -47,8 +52,15 @@ export type SpanStatus = "running" | "ok" | "warning" | "error" | "cancelled";
 
 export interface TraceSpan {
   id: string;
+  /** Correlates every span of one Run; the unit an external tracer would join on. */
+  traceId: string;
   runId: string;
   agentId: string;
+  /** The Agent configuration version this Run executed against. */
+  agentVersion: number;
+  /** Codex thread this Run continued, correlating spans across Runs. */
+  sessionId: string | null;
+  actorType: ActorType;
   parentSpanId: string | null;
   category: string;
   name: string;

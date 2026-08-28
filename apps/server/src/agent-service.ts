@@ -27,9 +27,16 @@ import { WorkspaceManager } from "./workspace.js";
 
 const now = () => new Date().toISOString();
 
+/**
+ * How much of the prompt the root span keeps. A length alone tells an operator
+ * nothing about what was asked; the whole prompt is an unbounded payload the
+ * trace should not carry.
+ */
+const PROMPT_PREVIEW_LENGTH = 200;
+
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
-  private readonly cancellationRequests = new Set<string>();
+  private readonly cancellationRequests = new Map<string, string>();
 
   constructor(
     private readonly config: AppConfig,
@@ -59,9 +66,12 @@ export class AgentService {
           span.completedAt = restartedAt;
           span.durationMs = Math.max(0, Date.parse(restartedAt) - Date.parse(span.startedAt));
           span.errorMessage = "Server restarted while this run was active";
+          span.attributes = { ...span.attributes, cancelledBy: "server-restart" };
         }
       }
       for (const agent of database.agents) {
+        // Stores written before Agents were versioned.
+        if (typeof agent.version !== "number") agent.version = 1;
         if (agent.status === "busy") {
           agent.status = "ready";
           agent.updatedAt = now();
@@ -89,6 +99,7 @@ export class AgentService {
     const id = randomUUID();
     const agent: Agent = {
       id,
+      version: 1,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
@@ -117,9 +128,14 @@ export class AgentService {
       if (agent.status === "busy") {
         throw new HttpError(409, "Stop the active run before editing this Agent");
       }
+      const before = JSON.stringify([agent.name, agent.description, agent.instructions]);
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
       if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
+      // Only a real configuration change is a new version.
+      if (JSON.stringify([agent.name, agent.description, agent.instructions]) !== before) {
+        agent.version = (agent.version ?? 1) + 1;
+      }
       agent.lastError = null;
       agent.updatedAt = now();
       return structuredClone(agent);
@@ -130,7 +146,7 @@ export class AgentService {
 
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(id);
-    await this.cancelExecution(id);
+    await this.cancelExecution(id, "agent-deleted");
     const archivedWorkspace = await this.workspaces.archive(agent);
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
@@ -286,10 +302,20 @@ export class AgentService {
       }
     });
     const secrets = this.config.arkApiKey ? [this.config.arkApiKey] : [];
-    const runSpan = buildRunSpan({
+    // One identity shared by every span of this Run. traceId is distinct from
+    // runId so an external tracer can join on it even if Runs are later
+    // retried or split.
+    const identity = {
+      traceId: randomUUID(),
       runId: run.id,
       agentId: agentAtStart.id,
+      agentVersion: agentAtStart.version ?? 1,
+      sessionId: agentAtStart.codexThreadId,
+    };
+    const runSpan = buildRunSpan({
+      ...identity,
       promptLength: run.prompt.length,
+      promptPreview: redactSecrets(run.prompt.slice(0, PROMPT_PREVIEW_LENGTH), secrets),
       startedAt: runStartedAt,
     });
     await this.appendSpans([runSpan]);
@@ -298,15 +324,24 @@ export class AgentService {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+      const containerRuntime = this.config.runtimeProvider === "container";
       processSpan = buildProcessSpan({
-        runId: run.id,
-        agentId: agentAtStart.id,
+        ...identity,
         parentSpanId: runSpan.id,
         startedAt: now(),
         sandboxMode: this.config.codexSandboxMode,
         runtimeProvider: this.config.runtimeProvider,
-        containerEngine:
-          this.config.runtimeProvider === "container" ? this.config.containerEngine : null,
+        containerEngine: containerRuntime ? this.config.containerEngine : null,
+        model: this.config.arkModel,
+        modelBaseUrl: this.config.arkBaseUrl,
+        runtimeImage: containerRuntime ? this.config.containerRuntimeImage : null,
+        resourceLimits: containerRuntime
+          ? {
+              cpus: this.config.containerCpuLimit,
+              memory: this.config.containerMemoryLimit,
+              pids: this.config.containerPidsLimit,
+            }
+          : null,
       });
       await this.appendSpans([processSpan]);
       const result = await this.runner.run({
@@ -318,7 +353,7 @@ export class AgentService {
       const completedAt = now();
       const eventSpans = buildEventSpans(
         result.events ?? [],
-        { runId: run.id, agentId: agentAtStart.id, parentSpanId: processSpan.id },
+        { ...identity, parentSpanId: processSpan.id },
         secrets,
         this.config.traceMaxEventSpansPerRun,
       );
@@ -358,17 +393,29 @@ export class AgentService {
       const message = error instanceof Error ? error.message : String(error);
       const redactedMessage = redactSecrets(message, secrets);
       const status: SpanStatus = cancelled ? "cancelled" : "error";
+      const cancellationReason = cancelled
+        ? (this.cancellationRequests.get(agentAtStart.id) ?? "operator")
+        : null;
+      const closingAttributes = cancellationReason
+        ? { cancelledBy: cancellationReason }
+        : {};
       const runnerError = error instanceof RunnerExecutionError ? error : null;
       const eventSpans = processSpan && runnerError
         ? buildEventSpans(
             runnerError.events,
-            { runId: run.id, agentId: agentAtStart.id, parentSpanId: processSpan.id },
+            { ...identity, parentSpanId: processSpan.id },
             secrets,
             this.config.traceMaxEventSpansPerRun,
           )
         : [];
       const spans: TraceSpan[] = [
-        completeSpan(runSpan, status, completedAt, cancelled ? null : redactedMessage),
+        completeSpan(
+          runSpan,
+          status,
+          completedAt,
+          cancelled ? null : redactedMessage,
+          closingAttributes,
+        ),
       ];
       if (processSpan) {
         spans.push(
@@ -377,7 +424,10 @@ export class AgentService {
             status,
             completedAt,
             cancelled ? null : redactedMessage,
-            runnerError?.usage ? { usage: runnerError.usage } : {},
+            {
+              ...closingAttributes,
+              ...(runnerError?.usage ? { usage: runnerError.usage } : {}),
+            },
           ),
           ...eventSpans,
         );
@@ -428,8 +478,8 @@ export class AgentService {
     });
   }
 
-  private async cancelExecution(agentId: string): Promise<void> {
-    this.cancellationRequests.add(agentId);
+  private async cancelExecution(agentId: string, reason = "operator"): Promise<void> {
+    this.cancellationRequests.set(agentId, reason);
     try {
       await this.runner.cancel(agentId);
       const execution = this.activeExecutions.get(agentId);

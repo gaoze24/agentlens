@@ -143,7 +143,33 @@ function SpanNode({
         <div className={"span-error span-error-" + span.status}>{span.errorMessage}</div>
       )}
       {expanded && (
-        <pre className="span-attributes">{JSON.stringify(span.attributes, null, 2)}</pre>
+        <div className="span-detail">
+          <dl className="span-identity">
+            <div>
+              <dt>Actor</dt>
+              <dd className={"actor actor-" + span.actorType}>{span.actorType}</dd>
+            </div>
+            <div>
+              <dt>Trace</dt>
+              <dd title={span.traceId}>{span.traceId.slice(0, 8)}</dd>
+            </div>
+            <div>
+              <dt>Span</dt>
+              <dd title={span.id}>{span.id.slice(0, 8)}</dd>
+            </div>
+            <div>
+              <dt>Agent version</dt>
+              <dd>v{span.agentVersion}</dd>
+            </div>
+            <div>
+              <dt>Session</dt>
+              <dd title={span.sessionId ?? "none"}>
+                {span.sessionId ? span.sessionId.slice(0, 8) : "—"}
+              </dd>
+            </div>
+          </dl>
+          <pre className="span-attributes">{JSON.stringify(span.attributes, null, 2)}</pre>
+        </div>
       )}
       {children.map((child) => (
         <SpanNode

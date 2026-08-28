@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RawCodexEvent, SpanStatus, TraceSpan } from "./types.js";
+import type { ActorType, RawCodexEvent, SpanStatus, TraceSpan } from "./types.js";
 
 const MAX_STRING_LENGTH = 4_096;
 const TRUNCATION_SUFFIX = "…[truncated]";
@@ -102,18 +102,32 @@ export function completeSpan(
   };
 }
 
-export interface BuildRunSpanInput {
+/** Identifiers every span of a Run carries, so a span stands alone. */
+export interface SpanIdentity {
+  traceId: string;
   runId: string;
   agentId: string;
+  agentVersion: number;
+  sessionId: string | null;
+}
+
+export interface BuildRunSpanInput extends SpanIdentity {
   promptLength: number;
+  promptPreview: string;
   startedAt: string;
 }
 
 export function buildRunSpan(input: BuildRunSpanInput): TraceSpan {
   return {
     id: randomUUID(),
+    traceId: input.traceId,
     runId: input.runId,
     agentId: input.agentId,
+    agentVersion: input.agentVersion,
+    sessionId: input.sessionId,
+    // The Run exists because a person asked for it; everything beneath this
+    // span is the Agent acting on their behalf.
+    actorType: "human",
     parentSpanId: null,
     category: "orchestration",
     name: "run.orchestration",
@@ -121,26 +135,36 @@ export function buildRunSpan(input: BuildRunSpanInput): TraceSpan {
     startedAt: input.startedAt,
     completedAt: null,
     durationMs: null,
-    attributes: { promptLength: input.promptLength },
+    attributes: {
+      promptLength: input.promptLength,
+      promptPreview: input.promptPreview,
+    },
     errorMessage: null,
   };
 }
 
-export interface BuildProcessSpanInput {
-  runId: string;
-  agentId: string;
+export interface BuildProcessSpanInput extends SpanIdentity {
   parentSpanId: string;
   startedAt: string;
   sandboxMode: string;
   runtimeProvider: string;
   containerEngine: string | null;
+  /** Model and infrastructure metadata needed to diagnose the Run. */
+  model: string;
+  modelBaseUrl: string;
+  runtimeImage: string | null;
+  resourceLimits: Record<string, unknown> | null;
 }
 
 export function buildProcessSpan(input: BuildProcessSpanInput): TraceSpan {
   return {
     id: randomUUID(),
+    traceId: input.traceId,
     runId: input.runId,
     agentId: input.agentId,
+    agentVersion: input.agentVersion,
+    sessionId: input.sessionId,
+    actorType: "agent",
     parentSpanId: input.parentSpanId,
     category: "runtime.process",
     name:
@@ -152,7 +176,12 @@ export function buildProcessSpan(input: BuildProcessSpanInput): TraceSpan {
     attributes: {
       sandboxMode: input.sandboxMode,
       runtimeProvider: input.runtimeProvider,
+      // Never the API key: only which model answered and where it lives.
+      model: input.model,
+      modelBaseUrl: input.modelBaseUrl,
       ...(input.containerEngine ? { containerEngine: input.containerEngine } : {}),
+      ...(input.runtimeImage ? { runtimeImage: input.runtimeImage } : {}),
+      ...(input.resourceLimits ? { resourceLimits: input.resourceLimits } : {}),
     },
     errorMessage: null,
   };
@@ -205,7 +234,7 @@ function itemIdForEvent(event: Record<string, unknown>): string | null {
 
 function buildEventSpan(
   raw: RawCodexEvent,
-  context: { runId: string; agentId: string; parentSpanId: string },
+  context: SpanIdentity & { parentSpanId: string },
   secrets: readonly string[],
   startedAt = raw.observedAt,
 ): TraceSpan {
@@ -218,8 +247,12 @@ function buildEventSpan(
   const completedAt = raw.observedAt;
   return {
     id: randomUUID(),
+    traceId: context.traceId,
     runId: context.runId,
     agentId: context.agentId,
+    agentVersion: context.agentVersion,
+    sessionId: context.sessionId,
+    actorType: "agent" as const,
     parentSpanId: context.parentSpanId,
     category,
     name: nameForEvent(raw.event, category),
@@ -237,14 +270,18 @@ function buildEventSpan(
  * than silently starting in the middle.
  */
 function truncationSpan(
-  context: { runId: string; agentId: string; parentSpanId: string },
+  context: SpanIdentity & { parentSpanId: string },
   droppedCount: number,
   observedAt: string,
 ): TraceSpan {
   return {
     id: randomUUID(),
+    traceId: context.traceId,
     runId: context.runId,
     agentId: context.agentId,
+    agentVersion: context.agentVersion,
+    sessionId: context.sessionId,
+    actorType: "agent" as const,
     parentSpanId: context.parentSpanId,
     category: "trace.truncated",
     name: "trace.truncated",
@@ -260,7 +297,7 @@ function truncationSpan(
 
 export function buildEventSpans(
   events: readonly RawCodexEvent[],
-  context: { runId: string; agentId: string; parentSpanId: string },
+  context: SpanIdentity & { parentSpanId: string },
   secrets: readonly string[],
   maxEventSpans = Number.POSITIVE_INFINITY,
 ): TraceSpan[] {
@@ -294,8 +331,12 @@ export function buildEventSpans(
     const category = categoryForEvent(pending.event);
     spans.push({
       id: randomUUID(),
+      traceId: context.traceId,
       runId: context.runId,
       agentId: context.agentId,
+      agentVersion: context.agentVersion,
+      sessionId: context.sessionId,
+      actorType: "agent" as const,
       parentSpanId: context.parentSpanId,
       category,
       name: nameForEvent(pending.event, category),

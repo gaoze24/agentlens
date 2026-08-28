@@ -4,6 +4,7 @@ import type { Agent, AgentRun, TraceSpan } from "./types.js";
 
 const agent: Agent = {
   id: "agent-1",
+  version: 3,
   name: "Auditor",
   description: "",
   instructions: "",
@@ -31,8 +32,12 @@ const run: AgentRun = {
 const spans: TraceSpan[] = [
   {
     id: "span-1",
+    traceId: "trace-1",
     runId: run.id,
     agentId: agent.id,
+    agentVersion: 3,
+    sessionId: "thread-1",
+    actorType: "agent" as const,
     parentSpanId: null,
     category: "orchestration",
     name: "run.orchestration",
@@ -45,8 +50,12 @@ const spans: TraceSpan[] = [
   },
   {
     id: "span-2",
+    traceId: "trace-1",
     runId: run.id,
     agentId: agent.id,
+    agentVersion: 3,
+    sessionId: "thread-1",
+    actorType: "agent" as const,
     parentSpanId: "span-1",
     category: "model.turn",
     name: "model.turn",
@@ -59,8 +68,12 @@ const spans: TraceSpan[] = [
   },
   {
     id: "span-3",
+    traceId: "trace-1",
     runId: run.id,
     agentId: agent.id,
+    agentVersion: 3,
+    sessionId: "thread-1",
+    actorType: "agent" as const,
     parentSpanId: "span-1",
     category: "tool.call",
     name: "tool.call:command_execution",

@@ -3,6 +3,7 @@ export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancell
 
 export interface Agent {
   id: string;
+  version: number;
   name: string;
   description: string;
   instructions: string;
@@ -42,10 +43,16 @@ export interface AgentRun {
 
 export type SpanStatus = "running" | "ok" | "warning" | "error" | "cancelled";
 
+export type ActorType = "human" | "agent" | "system";
+
 export interface TraceSpan {
   id: string;
+  traceId: string;
   runId: string;
   agentId: string;
+  agentVersion: number;
+  sessionId: string | null;
+  actorType: ActorType;
   parentSpanId: string | null;
   category: string;
   name: string;

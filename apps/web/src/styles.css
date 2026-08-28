@@ -1601,3 +1601,62 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* Stable identifiers carried by a span, shown alongside its payload. */
+.span-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.span-identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 6px 0 0 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.span-identity > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.span-identity dt {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.span-identity dd {
+  margin: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.actor {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.actor-human {
+  color: #3d4fa1;
+  background: #e0e5f8;
+}
+
+.actor-agent {
+  color: #277756;
+  background: #dcf2e9;
+}
+
+.actor-system {
+  color: #6b6b70;
+  background: #ececef;
+}

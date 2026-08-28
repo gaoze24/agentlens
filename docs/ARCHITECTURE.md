@@ -101,6 +101,10 @@ flowchart TD
     Process --> Event4["Event span: runtime.error (on failure)"]
 ```
 
+Every span carries `traceId`, `runId`, `agentId`, `agentVersion`, `sessionId`,
+`parentSpanId`, and `actorType` (`human` for the requested Run, `agent` for the
+Agent's own steps), so a span is interpretable on its own.
+
 - **Root span** (`category: orchestration`) covers the whole Run. It is
   **persisted as `running` before the Runtime is invoked** and closed
   `ok`/`error`/`cancelled` alongside the existing `AgentRun.status`
@@ -108,7 +112,8 @@ flowchart TD
   span is never duplicated.
 - **Process span** (`category: runtime.process`) covers one
   `AgentRunner.run()` invocation; carries sandbox mode, runtime provider,
-  and (for the container Runtime) the container engine — never the Ark key.
+  and (for the container Runtime) the container engine, runtime image, and
+  resource limits, plus the model id and base URL — never the Ark key.
 - **Event spans** are derived from the Codex CLI's `--json` event stream,
   captured verbatim in `codex-runner.ts`/`container-codex-runner.ts` and
   shaped into spans by `trace.ts`. Category is inferred from the event's
