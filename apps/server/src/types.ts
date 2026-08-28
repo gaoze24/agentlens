@@ -72,6 +72,26 @@ export interface TraceSpan {
   errorMessage: string | null;
 }
 
+/** Per-million-token prices the deployment was configured with. */
+export interface AuditCostRates {
+  currency: string;
+  inputPerMillion: number;
+  cachedInputPerMillion: number;
+  outputPerMillion: number;
+}
+
+/**
+ * An estimate, not an invoice: it prices the tokens the Runtime reported at
+ * the rates this deployment was configured with, and both halves travel in the
+ * bundle so a reader can check the arithmetic.
+ */
+export interface AuditCost extends AuditCostRates {
+  billedInputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  estimatedTotal: number;
+}
+
 export interface AuditSummary {
   durationMs: number | null;
   inputTokens: number;
@@ -85,10 +105,13 @@ export interface AuditSummary {
   warnings: number;
   errors: number;
   spanCount: number;
+  /** null when no price is configured, so an unpriced Run says so. */
+  cost: AuditCost | null;
 }
 
 export interface AuditBundle {
-  schemaVersion: 1;
+  /** 2 added `summary.cost`; 1 bundles have every other field unchanged. */
+  schemaVersion: 2;
   exportedAt: string;
   agent: Pick<Agent, "id" | "name">;
   run: AgentRun;

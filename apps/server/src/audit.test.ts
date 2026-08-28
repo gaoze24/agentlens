@@ -93,10 +93,11 @@ describe("audit bundles", () => {
       run,
       spans,
       ["secret-key"],
+      undefined,
       "2026-01-01T00:00:06.000Z",
     );
 
-    expect(bundle.schemaVersion).toBe(1);
+    expect(bundle.schemaVersion).toBe(2);
     expect(bundle.agent).toEqual({ id: agent.id, name: agent.name });
     expect(bundle.summary).toEqual({
       durationMs: 3500,
@@ -111,10 +112,43 @@ describe("audit bundles", () => {
       warnings: 1,
       errors: 1,
       spanCount: 3,
+      cost: null,
     });
     const serialized = JSON.stringify(bundle);
     expect(serialized).not.toContain("secret-key");
     expect(serialized).not.toContain("abc.def");
     expect(serialized).toContain("[REDACTED]");
+  });
+
+  it("prices the cached input tokens once, at the cached rate", () => {
+    const bundle = buildAuditBundle(agent, run, spans, [], {
+      currency: "USD",
+      inputPerMillion: 1,
+      cachedInputPerMillion: 0.25,
+      outputPerMillion: 3,
+    });
+
+    // 80 uncached input + 40 cached input + 30 output, not 120 + 40 + 30.
+    expect(bundle.summary.cost).toEqual({
+      currency: "USD",
+      inputPerMillion: 1,
+      cachedInputPerMillion: 0.25,
+      outputPerMillion: 3,
+      billedInputTokens: 80,
+      cachedInputTokens: 40,
+      outputTokens: 30,
+      estimatedTotal: 0.00018,
+    });
+  });
+
+  it("reports no cost at all when no price is configured", () => {
+    const bundle = buildAuditBundle(agent, run, spans, [], {
+      currency: "USD",
+      inputPerMillion: 0,
+      cachedInputPerMillion: 0,
+      outputPerMillion: 0,
+    });
+
+    expect(bundle.summary.cost).toBeNull();
   });
 });

@@ -23,6 +23,13 @@ const envSchema = z.object({
   POLICY_RULES: z.string().optional(),
   TRACE_MAX_EVENT_SPANS_PER_RUN: z.coerce.number().int().min(1).default(500),
   TRACE_RETENTION_RUNS: z.coerce.number().int().min(1).default(200),
+  // Prices per million tokens. They default to 0 because this platform cannot
+  // know what an endpoint costs, and a fabricated rate is worse than none: at
+  // 0 the audit bundle reports no cost at all rather than a confident $0.00.
+  TRACE_COST_CURRENCY: z.string().trim().min(1).max(8).default("USD"),
+  TRACE_COST_INPUT_PER_MTOK: z.coerce.number().min(0).default(0),
+  TRACE_COST_CACHED_INPUT_PER_MTOK: z.coerce.number().min(0).default(0),
+  TRACE_COST_OUTPUT_PER_MTOK: z.coerce.number().min(0).default(0),
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
   CONTAINER_ENGINE: z.string().min(1).default("docker"),
   CONTAINER_RUNTIME_IMAGE: z.string().min(1).default("volc-agent-runtime:local"),
@@ -87,6 +94,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     policyRules: parsePolicyRules(env.POLICY_RULES),
     traceMaxEventSpansPerRun: env.TRACE_MAX_EVENT_SPANS_PER_RUN,
     traceRetentionRuns: env.TRACE_RETENTION_RUNS,
+    costRates: {
+      currency: env.TRACE_COST_CURRENCY,
+      inputPerMillion: env.TRACE_COST_INPUT_PER_MTOK,
+      cachedInputPerMillion: env.TRACE_COST_CACHED_INPUT_PER_MTOK,
+      outputPerMillion: env.TRACE_COST_OUTPUT_PER_MTOK,
+    },
     runtimeProvider: env.RUNTIME_PROVIDER,
     containerEngine: env.CONTAINER_ENGINE,
     containerRuntimeImage: env.CONTAINER_RUNTIME_IMAGE,

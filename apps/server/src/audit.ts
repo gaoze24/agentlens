@@ -1,5 +1,55 @@
 import { redactAttributes, redactSecrets } from "./trace.js";
-import type { Agent, AgentRun, AuditBundle, AuditSummary, TraceSpan } from "./types.js";
+import type {
+  Agent,
+  AgentRun,
+  AuditBundle,
+  AuditCost,
+  AuditCostRates,
+  AuditSummary,
+  TraceSpan,
+} from "./types.js";
+
+const UNPRICED: AuditCostRates = {
+  currency: "USD",
+  inputPerMillion: 0,
+  cachedInputPerMillion: 0,
+  outputPerMillion: 0,
+};
+
+/**
+ * Codex reports cached input tokens as a subset of the input tokens, so
+ * pricing both at the full rate would double-charge the cached half.
+ */
+function estimateCost(
+  usage: AgentRun["usage"],
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+  rates: AuditCostRates,
+): AuditCost | null {
+  // A Run that has not reported usage yet -- one still executing, or one whose
+  // Runtime never reported any -- is unpriced, not free.
+  if (usage === null) return null;
+  const priced =
+    rates.inputPerMillion > 0 ||
+    rates.cachedInputPerMillion > 0 ||
+    rates.outputPerMillion > 0;
+  if (!priced) return null;
+  const billedInputTokens = Math.max(0, inputTokens - cachedInputTokens);
+  const total =
+    (billedInputTokens * rates.inputPerMillion +
+      cachedInputTokens * rates.cachedInputPerMillion +
+      outputTokens * rates.outputPerMillion) /
+    1_000_000;
+  return {
+    ...rates,
+    billedInputTokens,
+    cachedInputTokens,
+    outputTokens,
+    // Six places keeps a sub-cent Run from rounding away to nothing.
+    estimatedTotal: Math.round(total * 1_000_000) / 1_000_000,
+  };
+}
 
 function durationForRun(run: AgentRun): number | null {
   if (!run.startedAt || !run.completedAt) return null;
@@ -9,7 +59,11 @@ function durationForRun(run: AgentRun): number | null {
   return Math.max(0, completedAt - startedAt);
 }
 
-export function summarizeAudit(run: AgentRun, spans: readonly TraceSpan[]): AuditSummary {
+export function summarizeAudit(
+  run: AgentRun,
+  spans: readonly TraceSpan[],
+  rates: AuditCostRates = UNPRICED,
+): AuditSummary {
   const inputTokens = run.usage?.inputTokens ?? 0;
   const cachedInputTokens = run.usage?.cachedInputTokens ?? 0;
   const outputTokens = run.usage?.outputTokens ?? 0;
@@ -34,6 +88,7 @@ export function summarizeAudit(run: AgentRun, spans: readonly TraceSpan[]): Audi
     warnings: spans.filter((span) => span.status === "warning").length,
     errors: spans.filter((span) => span.status === "error").length,
     spanCount: spans.length,
+    cost: estimateCost(run.usage, inputTokens, cachedInputTokens, outputTokens, rates),
   };
 }
 
@@ -42,6 +97,7 @@ export function buildAuditBundle(
   run: AgentRun,
   spans: readonly TraceSpan[],
   secrets: readonly string[],
+  rates: AuditCostRates = UNPRICED,
   exportedAt = new Date().toISOString(),
 ): AuditBundle {
   const sanitizedRun: AgentRun = {
@@ -59,11 +115,11 @@ export function buildAuditBundle(
     }))
     .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     exportedAt,
     agent: { id: agent.id, name: agent.name },
     run: sanitizedRun,
-    summary: summarizeAudit(sanitizedRun, sanitizedSpans),
+    summary: summarizeAudit(sanitizedRun, sanitizedSpans, rates),
     spans: sanitizedSpans,
   };
 }
