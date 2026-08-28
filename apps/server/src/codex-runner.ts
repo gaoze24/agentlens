@@ -43,7 +43,11 @@ export function buildCodexArgs(
   return args;
 }
 
-export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
+export function parseCodexEventLine(
+  line: string,
+  parsed: ParsedEvents,
+  onEvent?: ((event: RawCodexEvent) => void) | undefined,
+): void {
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(line) as Record<string, unknown>;
@@ -51,7 +55,9 @@ export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
     return;
   }
 
-  parsed.rawEvents.push({ observedAt: new Date().toISOString(), event });
+  const raw: RawCodexEvent = { observedAt: new Date().toISOString(), event };
+  parsed.rawEvents.push(raw);
+  onEvent?.(raw);
 
   if (event.type === "thread.started" && typeof event.thread_id === "string") {
     parsed.threadId = event.thread_id;
@@ -176,7 +182,7 @@ export class CodexRunner implements AgentRunner {
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
         for (const line of lines) {
-          parseCodexEventLine(line, parsed);
+          parseCodexEventLine(line, parsed, request.onEvent);
         }
       } else {
         stderr += chunk.toString("utf8");
@@ -201,7 +207,7 @@ export class CodexRunner implements AgentRunner {
         child.once("close", (code) => resolve(code ?? 1));
       });
       if (stdout.trim()) {
-        parseCodexEventLine(stdout.trim(), parsed);
+        parseCodexEventLine(stdout.trim(), parsed, request.onEvent);
       }
       if (active.cancelled) {
         throw new RunCancelledError(parsed.rawEvents, parsed.usage);

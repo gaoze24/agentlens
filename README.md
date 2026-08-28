@@ -249,6 +249,8 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
+| `POLICY_ENABLED` | `true` | Evaluate and enforce Runtime command policy. |
+| `POLICY_RULES` | Built-in | JSON array overriding the built-in deny rules. |
 | `TRACE_MAX_EVENT_SPANS_PER_RUN` | `500` | Event spans kept per Run before older ones are dropped. |
 | `TRACE_RETENTION_RUNS` | `200` | Runs whose traces are retained, oldest dropped whole. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |

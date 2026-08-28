@@ -4,8 +4,10 @@ import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError, RunnerExecutionError } from "./errors.js";
 import { JsonStore } from "./store.js";
+import { evaluateEvent } from "./policy.js";
 import {
   buildEventSpans,
+  buildPolicySpan,
   buildProcessSpan,
   buildRunSpan,
   completeSpan,
@@ -14,6 +16,7 @@ import {
 } from "./trace.js";
 import type {
   Agent,
+  PolicyDecision,
   AgentRun,
   AgentRunner,
   AuditBundle,
@@ -37,6 +40,7 @@ const PROMPT_PREVIEW_LENGTH = 200;
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Map<string, string>();
+  private readonly policyDenials = new Map<string, PolicyDecision>();
 
   constructor(
     private readonly config: AppConfig,
@@ -320,6 +324,7 @@ export class AgentService {
     });
     await this.appendSpans([runSpan]);
     let processSpan: TraceSpan | null = null;
+    const policySpans: TraceSpan[] = [];
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
@@ -344,11 +349,32 @@ export class AgentService {
           : null,
       });
       await this.appendSpans([processSpan]);
+      const policyParent = processSpan.id;
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
+        onEvent: this.config.policyEnabled
+          ? (event) => {
+              const decision = evaluateEvent(event, this.config.policyRules);
+              if (!decision) return;
+              policySpans.push(
+                buildPolicySpan(
+                  decision,
+                  { ...identity, parentSpanId: policyParent },
+                  secrets,
+                  event.observedAt,
+                ),
+              );
+              if (decision.decision === "deny") {
+                // Terminate at the Runtime boundary: removing the container
+                // stops the Agent mid-turn rather than reporting afterwards.
+                this.policyDenials.set(agentAtStart.id, decision);
+                void this.runner.cancel(agentAtStart.id).catch(() => undefined);
+              }
+            }
+          : undefined,
       });
       const completedAt = now();
       const eventSpans = buildEventSpans(
@@ -380,7 +406,12 @@ export class AgentService {
         // Replace the open spans written at start; completeSpan preserves ids,
         // so appending here would duplicate them.
         database.spans = database.spans.filter((span) => span.runId !== run.id);
-        database.spans.push(completedRunSpan, completedProcessSpan, ...eventSpans);
+        database.spans.push(
+          completedRunSpan,
+          completedProcessSpan,
+          ...policySpans,
+          ...eventSpans,
+        );
         database.spans = pruneSpans(database.spans, this.config.traceRetentionRuns);
         agent.status = "ready";
         agent.codexThreadId = result.threadId;
@@ -389,8 +420,16 @@ export class AgentService {
       });
     } catch (error) {
       const completedAt = now();
-      const cancelled = error instanceof RunCancelledError;
-      const message = error instanceof Error ? error.message : String(error);
+      // A Run stopped by policy was terminated by the platform, not abandoned
+      // by an operator, so it is a failure with a stated cause.
+      const denial = this.policyDenials.get(agentAtStart.id) ?? null;
+      this.policyDenials.delete(agentAtStart.id);
+      const cancelled = denial === null && error instanceof RunCancelledError;
+      const message = denial
+        ? "Blocked by policy " + denial.ruleId + ": " + denial.reason
+        : error instanceof Error
+          ? error.message
+          : String(error);
       const redactedMessage = redactSecrets(message, secrets);
       const status: SpanStatus = cancelled ? "cancelled" : "error";
       const cancellationReason = cancelled
@@ -429,6 +468,7 @@ export class AgentService {
               ...(runnerError?.usage ? { usage: runnerError.usage } : {}),
             },
           ),
+          ...policySpans,
           ...eventSpans,
         );
       }

@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { ActorType, RawCodexEvent, SpanStatus, TraceSpan } from "./types.js";
+import type {
+  ActorType,
+  PolicyDecision,
+  RawCodexEvent,
+  SpanStatus,
+  TraceSpan,
+} from "./types.js";
 
 const MAX_STRING_LENGTH = 4_096;
 const TRUNCATION_SUFFIX = "…[truncated]";
@@ -374,4 +380,44 @@ export function pruneSpans(spans: readonly TraceSpan[], maxRuns: number): TraceS
       .map(([runId]) => runId),
   );
   return spans.filter((span) => retained.has(span.runId));
+}
+
+/**
+ * A policy decision is a first-class span: the trace should show that the check
+ * ran and what it concluded, not only the actions that survived it.
+ */
+export function buildPolicySpan(
+  decision: PolicyDecision,
+  context: SpanIdentity & { parentSpanId: string },
+  secrets: readonly string[],
+  observedAt: string,
+): TraceSpan {
+  const denied = decision.decision === "deny";
+  return {
+    id: randomUUID(),
+    traceId: context.traceId,
+    runId: context.runId,
+    agentId: context.agentId,
+    agentVersion: context.agentVersion,
+    sessionId: context.sessionId,
+    // The platform decides, not the Agent and not the operator.
+    actorType: "system",
+    parentSpanId: context.parentSpanId,
+    category: "policy.decision",
+    name: "policy.decision:" + decision.decision,
+    status: denied ? "error" : "ok",
+    startedAt: observedAt,
+    completedAt: observedAt,
+    durationMs: 0,
+    attributes: {
+      decision: decision.decision,
+      ruleId: decision.ruleId,
+      reason: decision.reason,
+      protectedAsset: decision.protectedAsset,
+      command: redactSecrets(decision.command, secrets),
+    },
+    errorMessage: denied
+      ? "Denied by policy " + decision.ruleId + ": " + decision.reason
+      : null,
+  };
 }

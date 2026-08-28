@@ -72,6 +72,8 @@ export interface AuditSummary {
   totalTokens: number;
   modelTurns: number;
   toolCalls: number;
+  policyDecisions: number;
+  policyDenials: number;
   warnings: number;
   errors: number;
   spanCount: number;

@@ -58,6 +58,134 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
+  it("terminates a Run at the Runtime boundary when policy denies an action", async () => {
+    // A runner that would keep going forever if nothing stopped it, and that
+    // records whether the denied command was ever allowed to complete.
+    let completedDeniedCommand = false;
+    let abort!: (reason: unknown) => void;
+    const pending = new Promise<RunnerResult>((resolve, reject) => {
+      abort = reject;
+      // If enforcement fails to stop it, the command completes shortly after
+      // and this flag flips -- so the assertion below is not vacuous.
+      setTimeout(() => {
+        completedDeniedCommand = true;
+        resolve({ output: "leaked the key", threadId: "t", usage: null, events: [] });
+      }, 400);
+    });
+    let cancelCalls = 0;
+    const service = await makeService({
+      run: (request) => {
+        request.onEvent?.({
+          observedAt: new Date().toISOString(),
+          event: {
+            type: "item.started",
+            item: { id: "i1", type: "command_execution", command: "cat ~/.ssh/id_rsa" },
+          },
+        });
+        return pending;
+      },
+      cancel: async () => {
+        cancelCalls += 1;
+        abort(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Contained" });
+    const { run } = await service.sendMessage(agent.id, "read my ssh key");
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+
+    // Enforcement happened at the boundary, not after the fact.
+    expect(cancelCalls).toBeGreaterThan(0);
+    expect(completedDeniedCommand).toBe(false);
+    // It reads as blocked, not as an operator cancellation.
+    expect(service.getRun(run.id).error).toContain("Blocked by policy");
+    expect(service.getRun(run.id).error).toContain("credential-read");
+
+    const decision = service
+      .getTrace(run.id)
+      .find((span) => span.category === "policy.decision");
+    expect(decision?.status).toBe("error");
+    expect(decision?.actorType).toBe("system");
+    expect(decision?.attributes).toMatchObject({
+      decision: "deny",
+      ruleId: "credential-read",
+      protectedAsset: "Host and user credentials",
+    });
+  });
+
+  it("records an allow decision so the check is visible on a clean Run", async () => {
+    const service = await makeService({
+      run: async (request) => {
+        request.onEvent?.({
+          observedAt: new Date().toISOString(),
+          event: {
+            type: "item.started",
+            item: { id: "i1", type: "command_execution", command: "npm test" },
+          },
+        });
+        return { output: "done", threadId: "t", usage: null, events: [] };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Clean" });
+    const { run } = await service.sendMessage(agent.id, "run the tests");
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+
+    const decision = service
+      .getTrace(run.id)
+      .find((span) => span.category === "policy.decision");
+    expect(decision?.status).toBe("ok");
+    expect(decision?.attributes.decision).toBe("allow");
+  });
+
+  it("leaves the Agent usable after a policy denial", async () => {
+    let deny = true;
+    let abort!: (reason: unknown) => void;
+    const service = await makeService({
+      run: (request) => {
+        if (deny) {
+          // The promise must exist before the event fires: onEvent triggers
+          // cancel synchronously, and cancel rejects this promise.
+          const running = new Promise<RunnerResult>((_resolve, reject) => {
+            abort = reject;
+          });
+          request.onEvent?.({
+            observedAt: new Date().toISOString(),
+            event: {
+              type: "item.started",
+              item: { id: "i1", type: "command_execution", command: "sudo rm -rf /" },
+            },
+          });
+          return running;
+        }
+        return Promise.resolve({
+          output: "recovered",
+          threadId: "t",
+          usage: null,
+          events: [],
+        });
+      },
+      cancel: async () => {
+        abort(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Recoverable" });
+    const blocked = await service.sendMessage(agent.id, "destroy everything");
+    await expect.poll(() => service.getRun(blocked.run.id).status).toBe("failed");
+
+    // Recovery: the Agent accepts work again once started.
+    deny = false;
+    await service.startAgent(agent.id);
+    const after = await service.sendMessage(agent.id, "do something safe");
+    await expect.poll(() => service.getRun(after.run.id).status).toBe("completed");
+    expect(service.getAgent(agent.id).status).toBe("ready");
+  });
+
+
   it("stamps every span of a Run with one shared identity", async () => {
     const service = await makeService({
       run: async () => ({

@@ -92,7 +92,7 @@ function buildSpanChildren(spans: TraceSpan[]): Map<string | null, TraceSpan[]> 
   return map;
 }
 
-type TraceFilter = "all" | "model" | "tool" | "warning" | "error";
+type TraceFilter = "all" | "model" | "tool" | "policy" | "warning" | "error";
 
 function filterTraceSpans(spans: TraceSpan[], filter: TraceFilter): TraceSpan[] {
   if (filter === "all") return spans;
@@ -104,7 +104,9 @@ function filterTraceSpans(spans: TraceSpan[], filter: TraceFilter): TraceSpan[] 
         ? span.category.startsWith("model.")
         : filter === "tool"
           ? span.category === "tool.call"
-          : span.status === filter;
+          : filter === "policy"
+            ? span.category === "policy.decision"
+            : span.status === filter;
     if (!matches) continue;
     let current: TraceSpan | undefined = span;
     while (current) {
@@ -230,6 +232,7 @@ function TracePanel({ runId, onClose }: { runId: string; onClose: () => void }) 
     all: bundle?.summary.spanCount ?? 0,
     model: bundle?.spans.filter((span) => span.category.startsWith("model.")).length ?? 0,
     tool: bundle?.summary.toolCalls ?? 0,
+    policy: bundle?.summary.policyDecisions ?? 0,
     warning: bundle?.summary.warnings ?? 0,
     error: bundle?.summary.errors ?? 0,
   };
@@ -292,6 +295,7 @@ function TracePanel({ runId, onClose }: { runId: string; onClose: () => void }) 
                 ["all", "All"],
                 ["model", "Model"],
                 ["tool", "Tools"],
+                ["policy", "Policy"],
                 ["warning", "Warnings"],
                 ["error", "Errors"],
               ] as Array<[TraceFilter, string]>).map(([value, label]) => (

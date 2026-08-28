@@ -106,6 +106,8 @@ describe("audit bundles", () => {
       totalTokens: 150,
       modelTurns: 1,
       toolCalls: 1,
+      policyDecisions: 0,
+      policyDenials: 0,
       warnings: 1,
       errors: 1,
       spanCount: 3,

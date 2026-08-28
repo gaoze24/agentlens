@@ -80,6 +80,8 @@ export interface AuditSummary {
   totalTokens: number;
   modelTurns: number;
   toolCalls: number;
+  policyDecisions: number;
+  policyDenials: number;
   warnings: number;
   errors: number;
   spanCount: number;
@@ -114,6 +116,22 @@ export interface UpdateAgentInput {
   instructions?: string | undefined;
 }
 
+export interface PolicyRule {
+  id: string;
+  description: string;
+  /** The asset the rule protects, so a denial explains what it defended. */
+  asset: string;
+  pattern: RegExp;
+}
+
+export interface PolicyDecision {
+  decision: "allow" | "deny";
+  ruleId: string | null;
+  reason: string;
+  protectedAsset: string | null;
+  command: string;
+}
+
 export interface RawCodexEvent {
   observedAt: string;
   event: Record<string, unknown>;
@@ -131,6 +149,12 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  /**
+   * Invoked as each Codex JSON event is observed, so the control plane can
+   * evaluate policy against an action while the turn is still running rather
+   * than reporting on it afterwards.
+   */
+  onEvent?: ((event: RawCodexEvent) => void) | undefined;
 }
 
 export interface AgentRunner {

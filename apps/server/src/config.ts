@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { parsePolicyRules } from "./policy.js";
 
 const envSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
@@ -15,6 +16,11 @@ const envSchema = z.object({
     .default("workspace-write"),
   CODEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(600_000),
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
+  POLICY_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+  POLICY_RULES: z.string().optional(),
   TRACE_MAX_EVENT_SPANS_PER_RUN: z.coerce.number().int().min(1).default(500),
   TRACE_RETENTION_RUNS: z.coerce.number().int().min(1).default(200),
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
@@ -77,6 +83,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     codexSandboxMode: env.CODEX_SANDBOX_MODE,
     codexTimeoutMs: env.CODEX_TIMEOUT_MS,
     codexMaxOutputBytes: env.CODEX_MAX_OUTPUT_BYTES,
+    policyEnabled: env.POLICY_ENABLED,
+    policyRules: parsePolicyRules(env.POLICY_RULES),
     traceMaxEventSpansPerRun: env.TRACE_MAX_EVENT_SPANS_PER_RUN,
     traceRetentionRuns: env.TRACE_RETENTION_RUNS,
     runtimeProvider: env.RUNTIME_PROVIDER,

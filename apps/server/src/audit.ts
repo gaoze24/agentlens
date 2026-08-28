@@ -27,6 +27,10 @@ export function summarizeAudit(run: AgentRun, spans: readonly TraceSpan[]): Audi
     totalTokens: inputTokens + outputTokens,
     modelTurns: completedTurns || startedTurns,
     toolCalls: spans.filter((span) => span.category === "tool.call").length,
+    policyDecisions: spans.filter((span) => span.category === "policy.decision").length,
+    policyDenials: spans.filter(
+      (span) => span.category === "policy.decision" && span.attributes.decision === "deny",
+    ).length,
     warnings: spans.filter((span) => span.status === "warning").length,
     errors: spans.filter((span) => span.status === "error").length,
     spanCount: spans.length,
