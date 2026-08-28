@@ -136,8 +136,16 @@ if ! "$engine" run --rm \
   exit 2
 fi
 
+# Probe Landlock the same way the Runtime actually starts. Without CODEX_HOME
+# mounted, codex exits on the missing path and the probe reports a sandbox
+# failure that has nothing to do with Landlock -- silently downgrading every
+# run to danger-full-access.
 if [[ "$codex_sandbox_mode" == "workspace-write" ]] \
-  && ! "$engine" run --rm "$runtime_image" \
+  && ! "$engine" run --rm \
+    "${preflight_user_args[@]}" \
+    --env CODEX_HOME=/codex-home \
+    --mount "type=bind,src=$CODEX_HOME,dst=/codex-home" \
+    "$runtime_image" \
     codex sandbox linux --full-auto -- true >/dev/null 2>&1; then
   log "Codex Landlock is unavailable in this Linux Runtime."
   log "Falling back to danger-full-access inside the disposable container boundary."

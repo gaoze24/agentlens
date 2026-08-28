@@ -103,6 +103,19 @@ rule anchored only on whitespace passes hand-written tests and is inert in
 production, so the boundary includes quotes and subshell punctuation, and the
 test suite pins the observed wrapper shapes.
 
+### Relationship to Codex's own sandbox
+
+Codex enforces its own OS-level sandbox (`--sandbox workspace-write`, Landlock
+on Linux) *before* a command runs. That is the stronger control, and it is the
+first line of defence: it denies pre-execution, where this policy layer can only
+detect at `item.started` and terminate.
+
+The two are complementary. Codex's sandbox decides what the filesystem allows;
+this layer applies rules the operator wrote, works for actions the sandbox
+permits (a `workspace-write` sandbox happily runs `rsync` or `curl --data`), and
+produces the audit evidence — a `policy.decision` span naming the rule and the
+protected asset — that an OS denial does not.
+
 ### Known limits of this control
 
 - It is a **denylist over command text**, so it is evasion-resistant only
@@ -111,8 +124,10 @@ test suite pins the observed wrapper shapes.
   then executed would not match.
 - It governs shell commands. File edits Codex performs through its own
   `file_change` items are traced but not policy-evaluated.
-- Enforcement is asynchronous: the decision is made when the event is observed,
-  which is when the command *starts*. A command that completes faster than the
+- Enforcement is asynchronous: `codex exec --json` is an observational stream,
+  not an approval protocol, so the host cannot veto a command before it runs.
+  The decision is made when the event is observed, which is when the command
+  *starts*. A command that completes faster than the
   control plane reacts would finish, though the denial is still recorded and
   the Run still fails.
 
