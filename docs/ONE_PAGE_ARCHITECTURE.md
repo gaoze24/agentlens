@@ -1,5 +1,7 @@
 # One-page architecture: Glass Box trace and audit
 
+**Selected track: A — The Glass Box (Trace and Audit).**
+
 Team-designed middleware for the Agent Launchpad. Data flow is numbered;
 **trust boundaries are the boxes**; the instrumentation, enforcement, and
 recovery points are tabulated below.
@@ -36,7 +38,7 @@ flowchart LR
     UI -->|"1 send message"| Auth
     UI -->|"7 read trace, export audit"| Auth
     Svc ==>|"2 spawn, key by env only"| Codex
-    Codex -.->|"5 events, on return or on the thrown error"| Svc
+    Codex -.->|"5 events, streamed as observed and on return or the thrown error"| Svc
     Codex -->|"4 model call"| Ark
 
     classDef trusted fill:#e8f0fe,stroke:#3d4fa1,stroke-width:2px
@@ -55,9 +57,10 @@ flowchart LR
 | 2 | **Root and process spans opened** | `AgentService.executeRun` | Spans persisted as `running` *before* the Runtime is invoked | A Run in flight is already observable, and a crashed Run keeps its evidence. |
 | 3 | Workspace side effects | Codex, inside the Runtime | File writes, command execution | Contained to the per-Agent workspace bind mount. |
 | 4 | **Secret containment** | `childEnvironment()` in both runners | `ARK_API_KEY` as an environment variable | The key is never an argv, a request body, or a span attribute. |
-| 5 | **Instrumentation seam** | `RunnerResult.events` / `RunnerExecutionError.events` | Raw Codex JSON events, as observed | A failed *or cancelled* run still carries its events, because `RunCancelledError extends RunnerExecutionError`. |
+| 5 | **Instrumentation seam** | `RunnerRequest.onEvent`, then `RunnerResult.events` / `RunnerExecutionError.events` | Raw Codex JSON events, streamed as observed and again as a whole list | A failed *or cancelled* run still carries its events, because `RunCancelledError extends RunnerExecutionError`. |
+| 5b | **Live span writes** | `LiveTraceWriter` + a serialised write queue | Open spans while the Run executes, closed in place on completion | Live writes are drained before the terminal rewrite, and a failed live write never fails the Run it describes. |
 | 6 | **Redaction, classification, retention** | `trace.ts` | Only redacted, capped spans reach disk | Secrets replaced and payloads truncated *before* persistence; `item.started`/`item.completed` paired into one span with a real duration. |
-| 7 | **Read and export path** | `GET /api/runs/:id/trace`, `GET /api/runs/:id/audit` | Redacted spans; versioned evidence bundle | Export re-applies redaction at serialization time as defence in depth. |
+| 7 | **Read and export path** | `GET /api/runs/:id/trace`, `GET /api/runs/:id/audit` | Redacted spans; versioned evidence bundle, priced at the configured rates | Export re-applies redaction at serialization time as defence in depth; the browser re-reads this route until the Run is terminal. |
 | — | **Crash recovery** | `AgentService.initialize()` | — | On restart, orphaned Runs are cancelled **and** every span still `running` is closed with a computed duration and a restart reason. |
 | — | **Deletion policy** | `AgentService.deleteAgent()` | — | Spans are removed with the Agent's runs and messages, matching workspace archival. |
 
@@ -85,11 +88,15 @@ closes in the same transaction that transitions `AgentRun.status`.
 run.orchestration        orchestration    running -> ok | error | cancelled
 `- runtime.container     runtime.process  sandbox mode, engine, token usage
    |- model.reasoning    one Codex item
+   |- policy.decision    what the platform allowed or denied, actorType system
    |- tool.call          item.started paired with item.completed,
    |- tool.call          carrying the real step duration
    |- runtime.warning    known non-fatal diagnostic, or an item that never completed
    `- runtime.error      the failing step
 ```
+
+Event spans are written twice: live and open while the Run executes, then
+replaced by the authoritative set when it ends.
 
 Problem statement, demo script, evidence map, and limitations:
 [GLASS_BOX.md](GLASS_BOX.md).

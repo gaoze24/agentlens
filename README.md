@@ -14,6 +14,11 @@ Volcengine ECS.
 
 ## Team-designed middleware: Glass Box trace and audit
 
+> **Selected track: A — The Glass Box (Trace and Audit).** One track, end to
+> end. The policy layer described below is not an entry in Track C: it exists
+> because a decision the platform makes about a Run is part of that Run's
+> trace, and it is judged as trace evidence, not as a sandbox.
+
 **The problem.** The Starter Kit records the *result* of an Agent Run — status,
 output, error — and nothing about how it got there. Codex reasons, runs
 commands, and edits files across many steps inside a disposable container whose
@@ -33,11 +38,22 @@ trace; `apps/server/src/trace.ts` classifies and redacts it; `audit.ts`
 summarises it; `GET /api/runs/:id/trace` and `GET /api/runs/:id/audit` serve it
 behind the same auth hook as every other route.
 
-**In the browser.** **View trace** opens the span tree with stat cards
-(duration, tokens in/out/cached, tool calls and model turns, warnings and
-errors) and count-badged filters that keep the tree connected; **Runs** lists
-history with status filter, search, and sorting; **Export JSON** downloads the
-audit bundle.
+**While it runs.** Spans are persisted as the events arrive, so **Watch trace
+live** shows each step the moment the Agent takes it, with the open step's bar
+growing against the timeline. The trace is not a post-mortem.
+
+**In the browser.** The span tree carries a proportional timeline bar per span
+on one shared axis, stat cards (duration, tokens in/out/cached, estimated cost,
+tool calls and model turns, warnings and errors), and count-badged filters that
+keep the tree connected. **Runs** lists history with status filter, search, and
+sorting, and compares any two Runs side by side with a delta column.
+**Export JSON** downloads the redacted audit bundle.
+
+**What the platform decided.** Commands are evaluated as they are observed, and
+a denial removes the container mid-turn. Every evaluation — allow and deny —
+becomes a `policy.decision` span with `actorType: system`, so the trace shows
+that the check ran and what it concluded rather than leaving its absence
+ambiguous.
 
 **No Ark credentials?** `npm run demo:seed` loads a fixture Agent with one
 successful and one failing Run, so the middleware is inspectable without a model
@@ -53,11 +69,34 @@ automated-evidence map, and known limitations.
 
 ## Screenshots
 
-### Agent Playground
+### Run trace — the team's middleware
+
+A failing Run of the seeded fixture Agent: stat cards, count-badged filters, and
+the span tree with a proportional timeline. The failing step and its diagnostic
+sit at the end of the axis, and the successful steps before it show exactly what
+the Agent had already changed.
+
+![Run trace view showing stat cards, filters, and a span tree with a proportional timeline ending in the failing step](docs/assets/trace-view.png)
+
+### The same view, mid-Run
+
+`Live`, with the running step's bar still growing and usage marked as not yet
+reported. Steps appear as the Agent takes them; export stays disabled until the
+Run is terminal, because a half-finished bundle is not evidence.
+
+![Run trace during execution, marked Live, with two running spans and a step still in progress](docs/assets/trace-live.png)
+
+### Run comparison
+
+![Two runs of the seeded Agent side by side, with a delta column across duration, tokens, cost, and errors](docs/assets/run-compare.png)
+
+### Provided baseline: Agent Playground
+
+The Starter Kit's own screens, unchanged.
 
 ![Agent Playground showing lifecycle controls, starter prompts, and the Codex Runtime](docs/assets/playground.jpg)
 
-### Create an Agent
+### Provided baseline: Create an Agent
 
 ![Create Agent form with name, description, and workspace instructions](docs/assets/create-agent.jpg)
 
@@ -253,6 +292,10 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `POLICY_RULES` | Built-in | JSON array overriding the built-in deny rules. |
 | `TRACE_MAX_EVENT_SPANS_PER_RUN` | `500` | Event spans kept per Run before older ones are dropped. |
 | `TRACE_RETENTION_RUNS` | `200` | Runs whose traces are retained, oldest dropped whole. |
+| `TRACE_COST_INPUT_PER_MTOK` | `0` | Price per million uncached input tokens; `0` reports no cost rather than a false zero. |
+| `TRACE_COST_CACHED_INPUT_PER_MTOK` | `0` | Price per million cached input tokens. |
+| `TRACE_COST_OUTPUT_PER_MTOK` | `0` | Price per million output tokens. |
+| `TRACE_COST_CURRENCY` | `USD` | Label on the cost estimate; no conversion is performed. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
@@ -280,9 +323,63 @@ boundaries.
 
 ```bash
 npm run check
+```
+
+Typecheck, both test suites, and the production build. It runs on
+every push through [.github/workflows/check.yml](.github/workflows/check.yml).
+
+```bash
+npm run verify:evidence
+```
+
+The middleware's own acceptance test. It seeds a throwaway store, serves it,
+exports every audit bundle over the real HTTP route, and checks each one:
+schema version, one connected span tree with no orphans or cycles, durations
+that agree with their timestamps, no span left open on a terminal Run, and no
+credential-shaped string anywhere in the file. It then restarts the server with
+a token configured and confirms an unauthenticated export is refused.
+
+To check a bundle you exported from the browser:
+
+```bash
+npm run verify:audit -- ~/Downloads/agentlens-run-<id>-audit.json
+```
+
+The verifier restates its redaction patterns independently of
+`apps/server/src/trace.ts` on purpose: a checker that shares code with the
+producer cannot catch a bug in the shared code.
+
+```bash
 terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
+
+## Known limitations
+
+Of the Glass Box middleware specifically — the Starter Kit's own limits are in
+[SECURITY.md](SECURITY.md), and the full list with reasoning is in
+[docs/GLASS_BOX.md](docs/GLASS_BOX.md#limitations).
+
+- **The live view polls once a second rather than streaming.** A step can be up
+  to a second old on screen, and each poll re-serialises the whole Run. SSE
+  would fix both; polling reuses the existing authenticated route and adds no
+  new transport to the trust boundary.
+- **The timeline is one bar per span, not a flame graph.** No tracks, zoom, or
+  brush, so on a Run with hundreds of spans short steps all render at the
+  minimum width.
+- **Redaction is pattern matching.** It covers the configured Ark key plus the
+  credential shapes listed in the docs. A secret in an unlisted shape, or one
+  encoded before being printed, would not be recognised.
+- **Cost is an estimate at operator-supplied rates.** Nothing validates them
+  against a price list, and a Run that reported no usage is unpriced rather
+  than free.
+- **Policy enforcement is a denylist over command text, applied at
+  `item.started`.** It is evasion-resistant only against the obvious, and it
+  detects-then-terminates rather than approving before execution.
+- **Single user, no identity.** Every caller shares one bearer token; the trace
+  records which Agent acted, not which person asked. That is Track B's problem.
+- **The JSON store rewrites the whole file per mutation.** Fine for a POC,
+  wrong for concurrent Agents at volume.
 
 ## Documentation
 

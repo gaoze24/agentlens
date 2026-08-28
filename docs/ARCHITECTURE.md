@@ -123,10 +123,17 @@ Agent's own steps), so a span is interpretable on its own.
   their span carries the actual step duration. If a runner fails, its captured
   event stream and partial usage are retained and written before the Run is
   closed, preserving the evidence needed to diagnose the failure.
+- **Policy spans** (`category: policy.decision`, `actorType: system`) record
+  what the control plane allowed or denied for a Run, so the trace shows the
+  check ran rather than leaving its absence ambiguous.
 
-**Span lifecycle and crash recovery.** Because the root and process spans are
-written when they open, a Run that is still executing already has a readable
-trace, and a Run interrupted by a crash keeps one. On startup `initialize()`
+**Span lifecycle and crash recovery.** Spans are written as they open, event
+spans included: `LiveTraceWriter` persists a step from the runner's `onEvent`
+callback and closes it in place when its completion arrives, so a Run that is
+still executing has a readable trace step by step, and a Run interrupted by a
+crash keeps whatever it had reached. The authoritative set is still rewritten
+from the whole event list when the Run ends, replacing the live spans rather
+than duplicating them. On startup `initialize()`
 force-cancels orphaned Runs **and** closes every span still marked `running`,
 stamping `"Server restarted while this run was active"` with a computed
 duration. Without that step an interrupted Run would either carry no trace at

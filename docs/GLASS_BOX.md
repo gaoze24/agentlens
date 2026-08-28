@@ -28,7 +28,10 @@ an Agent platform unoperable.
 
 Every Run emits a correlated, redacted **trace** — a tree of `TraceSpan`
 records persisted beside Agents, messages, and Runs — plus a **versioned audit
-bundle** that can leave the machine as evidence.
+bundle** that can leave the machine as evidence. Spans are written **as the Run
+executes**, so the trace is readable while the Agent is still working, and each
+one is drawn on a shared timeline so the shape of the Run is visible before any
+number is read.
 
 | Span | Category | Owns |
 | --- | --- | --- |
@@ -131,6 +134,17 @@ protected asset — that an OS denial does not.
   control plane reacts would finish, though the denial is still recorded and
   the Run still fails.
 
+### The panel cannot take the app with it
+
+React unmounts the entire tree on an unhandled render error, so a single bad
+span used to blank the whole Playground — recoverable only by reloading the
+page, during the demo, on the one screen the reviewer came to see. Two things
+prevent that now: span identity is rendered defensively (a missing field shows
+`—` rather than throwing), and both diagnostics panels are wrapped in an error
+boundary that degrades to a dialog naming the failure and pointing at
+`GET /api/runs/:id/trace`. The Run is unaffected either way; only its view
+failed.
+
 ## Boundary and ownership
 
 - **Who owns the decision.** `AgentService.executeRun` (the control plane) owns
@@ -166,11 +180,102 @@ carries `cancelledBy` — `operator` (someone pressed Stop), `agent-deleted`, or
 Closing preserves span ids, so the terminal write **replaces** this Run's spans
 rather than appending — appending would duplicate them.
 
+### Live spans
+
+An observability layer that only speaks once the subject has finished is not
+much use during the minute the subject is running. Event spans are therefore
+written twice over, in two regimes:
+
+| Regime | Written by | Pairing | Authoritative |
+| --- | --- | --- | --- |
+| Live, during the Run | `LiveTraceWriter`, from the same `onEvent` callback policy uses | No lookahead: an `item.started` is written `running` and **closed in place** under the same span id when its `item.completed` arrives | No |
+| Terminal, when the Run ends | `buildEventSpans`, over the whole event list | Full lookahead, plus the truncation notice span | Yes |
+
+The two regimes agree because the second one *replaces* the first: the terminal
+write already deleted and rewrote this Run's spans, so a live span is superseded
+rather than duplicated. Three properties make that safe:
+
+- **In-flight writes are drained before the rewrite.** `onEvent` is
+  synchronous and persistence is not, so live updates are chained onto one
+  queue and awaited before the terminal `store.mutate` — otherwise a late write
+  would land after the rewrite and resurrect a span it had just replaced.
+- **A trace that cannot be written never fails the Run it describes.** Live
+  write errors are swallowed; the terminal write is the one that must land.
+- **The live view is not truncated, it stops.** Past
+  `TRACE_MAX_EVENT_SPANS_PER_RUN` the writer stops emitting rather than dropping
+  the oldest spans out from under an operator who is watching them. The terminal
+  write applies the real tail-keeping policy, notice span included.
+
+Policy decisions are written live too — a denial is the span an operator most
+needs to see at the moment it happens, not afterwards.
+
+In the browser, **View trace** becomes **Watch trace live**: the panel re-reads
+the bundle until the Run is terminal, marks itself `Live`, and keeps an open
+span's bar growing between polls. Export stays disabled until the Run ends,
+because a bundle of a half-finished Run is not evidence of anything.
+
+![Run trace during execution, marked Live, with two running spans and a step still in progress](assets/trace-live.png)
+
 On startup `initialize()` force-cancels orphaned Runs **and** closes every span
 still marked `running`, stamping `"Server restarted while this run was active"`
 with a computed duration. Without that, an interrupted Run would either carry no
 trace at all or leave spans open forever — the single failure an observability
 capability most needs to explain.
+
+## Reading the trace: timeline, cost, and comparison
+
+Three readings sit on top of the same span data, and none of them add a
+capability the middleware did not already record.
+
+**A proportional timeline.** Every span row carries a bar on one shared axis
+spanning the Run's whole wall clock. Because the tree indents rows from the
+left, their right edges stay aligned and a bar means the same thing at every
+depth. Reading a column of durations tells you which step was slowest; the bars
+also tell you *when* — the gap before a step, the step that ran while another
+was still open, the failure that arrived at the very end. An open span is drawn
+up to the present moment and keeps growing while the Run is live.
+
+**An estimated cost.** Token counts answer "how much did this consume"; they do
+not answer "what did it cost". The audit bundle prices the reported usage at
+the rates the deployment was configured with:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TRACE_COST_INPUT_PER_MTOK` | `0` | Price per million uncached input tokens |
+| `TRACE_COST_CACHED_INPUT_PER_MTOK` | `0` | Price per million cached input tokens |
+| `TRACE_COST_OUTPUT_PER_MTOK` | `0` | Price per million output tokens |
+| `TRACE_COST_CURRENCY` | `USD` | Label only; no conversion is performed |
+
+Cached input tokens are reported by Codex as a *subset* of input tokens, so
+they are billed once at the cached rate and subtracted from the uncached half —
+pricing both at the full rate would overstate every cached Run. The rates
+travel inside `summary.cost` next to the estimate, so a reader can check the
+arithmetic instead of trusting it. **The defaults are zero on purpose:** this
+platform cannot know what an endpoint costs, and `summary.cost` is `null` for
+an unpriced deployment rather than a confident `$0.00`. The estimate is an
+estimate, not an invoice.
+
+The rates are ordinary environment variables, so where you set them depends on
+how the control plane was started — `.env` is read by the Docker Compose and
+deployment paths, while `npm run poc` takes its configuration from the
+environment it is invoked with:
+
+```bash
+ARK_API_KEY=your-key ARK_MODEL=ep-your-endpoint \
+TRACE_COST_INPUT_PER_MTOK=0.14 \
+TRACE_COST_CACHED_INPUT_PER_MTOK=0.014 \
+TRACE_COST_OUTPUT_PER_MTOK=0.28 \
+npm run poc
+```
+
+**A two-Run comparison.** A single trace says what happened; after a retry, a
+prompt edit, or a configuration change the question is what *changed*. Run
+history selects any two Runs of an Agent and puts their summaries side by side —
+duration, tokens, cost, tool calls, model turns, policy denials, warnings,
+errors, spans — with a delta column that colours the direction only for metrics
+where lower is unambiguously better.
+
+![Two runs of the seeded Agent compared side by side, with a delta column](assets/run-compare.png)
 
 ## Redaction and trust boundary
 
@@ -200,6 +305,36 @@ so string-match redaction is defence in depth rather than the only control.
 bearer-auth hook as every other `/api/*` route, and the export path re-applies
 redaction at serialization time because a bundle is meant to leave the machine.
 
+## Verifying the evidence
+
+An export nobody checks is a file, not evidence. `scripts/verify-audit.mjs`
+reads an exported bundle and answers whether it is worth handing to someone who
+was not there:
+
+| Check | Why it matters |
+| --- | --- |
+| `schemaVersion` is one this verifier understands | A consumer should refuse a shape it cannot read rather than guess. |
+| Every span carries `id`, `traceId`, `runId`, `agentId`, `agentVersion`, `actorType`, `category`, `status`, `startedAt` | A span that is missing identity cannot be interpreted on its own, which is the whole point of the field set. |
+| One traceId, no duplicate span ids, every `parentSpanId` resolves, exactly one root, no cycles | A tree with an orphan is a trace with a hole in the middle of the story. |
+| `durationMs` agrees with the timestamps; nothing completed before it started | A duration nobody can recompute is a number, not a measurement. |
+| No span left `running` on a terminal Run | Exactly what the crash-recovery path exists to prevent, checked from outside. |
+| No credential-shaped string anywhere in the file | The bundle is built to leave the machine. |
+
+```bash
+npm run verify:audit -- ~/Downloads/agentlens-run-<id>-audit.json
+npm run verify:evidence   # seed, serve, export over HTTP, verify, and check the route is guarded
+```
+
+The verifier restates the credential patterns **independently** of
+`trace.ts` rather than importing them. A checker that shares code with the
+producer cannot catch a bug in the shared code, and the job of this one is to
+disbelieve the producer.
+
+`npm run verify:evidence` is the end-to-end version: it seeds a throwaway
+store, serves it, exports every bundle over the real authenticated route,
+verifies each, then restarts with `APP_AUTH_TOKEN` set and confirms an
+unauthenticated export is refused with a 401. Both run in CI on every push.
+
 ## Retention
 
 Traces are bounded on two axes so one Agent cannot exhaust the JSON store, which
@@ -226,12 +361,20 @@ npm run demo:seed -- --force   # replace an existing store
 ```
 
 The fixture is built to exercise every classification path: a successful Run
-(reasoning, file writes, a passing command, a completed model turn) and a
-failing Run (a started-but-never-completed turn, a file write, a failing
-command, the benign model-metadata diagnostic downgraded to `warning`, and the
-`runtime.error` that ended it). Every filter in the trace view is non-empty, the
-stat cards are populated, and one span carries planted secrets already stored as
-`[REDACTED]`.
+(reasoning, file writes, a passing command, an allow decision, a completed model
+turn) and a failing Run (a started-but-never-completed turn, a file write, an
+allow decision, a failing command, the benign model-metadata diagnostic
+downgraded to `warning`, and the `runtime.error` that ended it). Every filter in
+the trace view is non-empty, the stat cards are populated, and one span carries
+planted secrets already stored as `[REDACTED]`.
+
+Fixture spans carry the **same identity fields a real span carries** —
+`traceId`, `agentVersion`, `sessionId`, `actorType` — and both Runs share one
+`sessionId`, so the thread correlation is visible in the fixture too. This is
+not cosmetic: a fixture whose spans are shaped differently from real ones is a
+fixture of nothing, and it is exactly the kind of gap that passes every backend
+test and then fails in front of a reviewer. `npm run verify:evidence` exports
+the seeded Runs over HTTP and verifies them on every push for that reason.
 
 ## Demo script (three minutes)
 
@@ -249,32 +392,46 @@ steps 3, 5, 6 and 8 all work against the fixture.
 2. **Normal case.** Send `Create a TypeScript hello-world CLI, add a test, and
    run it.` A real model call, real file writes, and a real command execution
    inside the disposable container.
-3. **Evidence.** Select **View trace**. Walk the tree: root → process →
-   individual `tool.call` and `model.message` spans, each with its real
-   duration. Read the stat cards — duration, tokens in/out/cached, tool calls
-   and model turns, warnings and errors. Expand a `tool.call` to show the
-   redacted payload. Use the count-badged filters to isolate `tool` or `model`
-   spans; note the tree stays connected because filtering keeps ancestors.
-4. **Failure case.** Send `Add a second test that asserts 1 === 2 so the suite
+3. **Watch it happen.** While the Run is still going, select **Watch trace
+   live**. Steps appear as the Agent takes them, the open step's bar grows
+   against the timeline, and the panel is marked `Live`. This is the difference
+   between an observability layer and a post-mortem.
+4. **Evidence.** When it finishes, walk the tree: root → process → individual
+   `tool.call` and `model.message` spans, each with its real duration and its
+   bar on one shared axis, so the slowest step is visible without reading a
+   number. Read the stat cards — duration, tokens in/out/cached, estimated
+   cost, tool calls and model turns, warnings and errors. Expand a `tool.call`
+   to show the redacted payload. Use the count-badged filters to isolate `tool`
+   or `model` spans; note the tree stays connected because filtering keeps
+   ancestors.
+5. **Failure case.** Send `Add a second test that asserts 1 === 2 so the suite
    fails, then run the whole suite and report the result.` The Agent reasons,
    edits a file, runs the suite, and the command exits non-zero — a Run that
    fails *after* doing real work.
-5. **Locate the failing step.** Open the trace and filter to **error**. The
+6. **Locate the failing step.** Open the trace and filter to **error**. The
    failing step is isolated out of a dozen successful ones, carrying its
    redacted stderr, while the preceding `file_change` spans still show exactly
    what the Agent changed before it broke.
-6. **Export the evidence.** Press **Export JSON** to download the audit bundle:
-   `schemaVersion`, the redacted Run, the summary, and every span. Open it and
-   point out that secrets are `[REDACTED]` in the file itself.
-7. **Recovery case.** Start another task, and while it is running kill the
+7. **Compare the two Runs.** Open **Runs**, tick both, and press **Compare
+   runs**: the failing Run against the successful one, with the deltas in
+   duration, tokens, cost, and errors.
+8. **Export the evidence.** Press **Export JSON** to download the audit bundle:
+   `schemaVersion`, the redacted Run, the summary including its cost estimate
+   and the rates behind it, and every span. Open it and point out that secrets
+   are `[REDACTED]` in the file itself.
+9. **Check the evidence, don't just wave it.** Run
+   `npm run verify:audit -- <the file you just downloaded>`. It re-derives the
+   tree, the timings, and the redaction from the file itself and prints what it
+   found. This is the difference between exporting JSON and producing evidence.
+10. **Recovery case.** Start another task, and while it is running kill the
    server (`Ctrl+C`) and restart it. The Run is reconciled to `cancelled` and
    its spans are closed with `"Server restarted while this run was active"` —
    an interrupted Run still has a readable trace instead of nothing.
-8. **Still controllable.** Open **Runs**, filter by `failed`, sort by duration
-   or tokens, and confirm the Agent returns to `ready` and accepts a new task.
+11. **Still controllable.** Open **Runs**, filter by `failed`, sort by duration
+    or tokens, and confirm the Agent returns to `ready` and accepts a new task.
 
-If short on time, cut step 7 — but it is the strongest recovery evidence in the
-submission.
+If short on time, cut steps 7 and 9 — but step 10 is the strongest recovery
+evidence in the submission.
 
 ## Automated evidence
 
@@ -285,6 +442,12 @@ submission.
 | Correlated trace for a successful Run | `agent-service.test.ts` — "records a correlated, successful trace for a completed run" |
 | The failing step is identifiable | `agent-service.test.ts` — "identifies the failing step when a run fails" |
 | A Run in flight already has a trace | `agent-service.test.ts` — "exposes an open trace before the Runtime returns" |
+| A step is readable while it is still running | `agent-service.test.ts` — "exposes a running step before the Runtime returns" |
+| A live span is closed in place, not duplicated | `trace.test.ts` — "opens a span when a step starts and closes the same span when it ends"; `agent-service.test.ts` (same test as above) |
+| A completion whose start was missed still lands | `trace.test.ts` — "emits a point span for a completion whose start was never seen" |
+| The live cap stops emitting but still closes open spans | `trace.test.ts` — "stops emitting past the per-Run cap but still closes what it opened" |
+| Cached input tokens are priced once | `audit.test.ts` — "prices the cached input tokens once, at the cached rate" |
+| An unpriced deployment reports no cost | `audit.test.ts` — "reports no cost at all when no price is configured" |
 | A crash leaves no span stuck open | `agent-service.test.ts` — "closes spans left open by a crash when the server restarts" |
 | Spans are deleted with their Agent | `agent-service.test.ts` — "removes an Agent's spans when the Agent is deleted" |
 | Old Runs are pruned whole | `agent-service.test.ts` — "retains only the most recent Runs' spans"; `trace.test.ts` — `pruneSpans` |
@@ -309,28 +472,39 @@ submission.
 | Session id correlates Runs in a thread | `agent-service.test.ts` — "carries the Codex session id so Runs in one thread correlate" |
 | Agent version bumps only on real change | `agent-service.test.ts` — "bumps the Agent version only on a real configuration change" |
 | Cancellation records its cause | `agent-service.test.ts` — "records what cancelled a Run rather than only that it was cancelled" |
+| Filtering keeps a tree connected, and cannot hang on a cycle | `trace-view.test.ts` — "keeps every ancestor so the filtered tree is still connected", "terminates on a parent cycle rather than hanging the panel" |
+| Timeline geometry: shared axis, open spans, zero-width Runs | `trace-view.test.ts` — "timeline geometry" |
+| A span written without identity renders instead of crashing | `trace-view.test.ts` — "survives a span written without one" |
+| A sub-cent Run does not round away to zero | `trace-view.test.ts` — "keeps a sub-cent Run from rounding away to zero" |
+| An exported bundle is well formed, connected, and redacted | `scripts/verify-audit.mjs`, run over every seeded Run by `npm run verify:evidence` |
+| The export route refuses an unauthenticated caller | `npm run verify:evidence`, against a server started with `APP_AUTH_TOKEN` |
 
 ## Limitations
 
-- **The Playground shows a trace only once a Run is terminal.** Both UI entry
-  points gate on terminal status, so the `running` spans persisted at start are
-  reachable through `GET /api/runs/:id/trace` but not yet through the browser.
-  Wiring live updates needs an event callback through the runners plus polling
-  in the panel; the span model already supports it.
-- **Event spans are written at completion, not streamed.** The root and process
-  spans are live; individual Codex events are collected by the runner and
-  written when the turn ends.
-- **No timeline visualisation.** Durations are shown as text per span. The data
-  needed for a proportional timeline is present.
+- **The live view polls; it is not pushed.** The panel re-reads the audit
+  bundle roughly once a second while the Run is active, so a step can be up to
+  a second old on screen and every poll re-serialises the whole Run. Server-sent
+  events or a WebSocket would remove both costs; polling was chosen because it
+  reuses the existing authenticated route and adds no new transport to the
+  trust boundary.
+- **The timeline is a bar per span, not a flame graph.** Concurrency is visible
+  as overlapping bars but is not laid out in tracks, and there is no zoom or
+  brush: on a Run with hundreds of spans the axis is compressed and short steps
+  all render at the 1.2% minimum width.
+- **The cost estimate is only as good as its configured rates.** Nothing
+  validates them against a price list, and cached-token accounting follows what
+  Codex reports rather than what the provider bills. A Run that has reported no
+  usage — one still executing, or one whose Runtime never reported any — is
+  unpriced rather than free.
 - **Redaction is pattern-matching.** It covers configured secrets plus the
   credential shapes listed above. A secret in a shape not on that list, or one
   that is base64- or hex-encoded before being printed, would still not be
   recognised. Pattern coverage is a moving target, not a guarantee.
-- **No retry relationships, and no cost or resource-consumption signals.** The
-  platform does not retry Runs, so there is nothing to link; token usage is
-  recorded but not priced, and container CPU/memory are recorded as configured
-  *limits* rather than measured consumption, which would need instrumentation
-  inside the Runtime.
+- **No retry relationships, and no resource-consumption signals.** The platform
+  does not retry Runs, so there is nothing to link — comparison is a manual
+  choice of two Runs, not an automatic before/after. Container CPU and memory
+  are recorded as configured *limits* rather than measured consumption, which
+  would need instrumentation inside the Runtime.
 - **Span categories cover what this platform does.** `orchestration`,
   `model.*`, `tool.call`, `runtime.*`, `policy.decision`. There is no
   memory-access, human-approval, or cloud-operation category yet; those
