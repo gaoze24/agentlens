@@ -1,0 +1,38 @@
+# The submission's own acceptance run: everything a reviewer would do by hand,
+# on every push. `check` proves the code behaves; `verify:evidence` proves the
+# artifact it produces is well formed, connected, and free of credential shapes.
+name: check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck, test, build
+        run: npm run check
+
+      - name: Verify the exported evidence end to end
+        run: npm run verify:evidence
+
+      - name: Fail if a credential shape reached the repository
+        run: |
+          if git grep -nIE '(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|AKIA[A-Z0-9]{16}|-----BEGIN[A-Z ]*PRIVATE KEY-----)' \
+               -- . ':!package-lock.json' ':!scripts/verify-audit.mjs' ':!apps/server/src/trace.ts' ':!apps/server/src/trace.test.ts' ':!.github/workflows/check.yml'; then
+            echo "::error::A credential-shaped string is committed to the repository."
+            exit 1
+          fi
+          echo "No credential shapes in tracked files."

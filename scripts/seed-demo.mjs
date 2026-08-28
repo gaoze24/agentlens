@@ -15,8 +15,18 @@ const workspaceRoot = path.resolve(process.env.AGENT_WORKSPACE_ROOT ?? "workspac
 const storePath = path.join(dataDirectory, "launchpad.json");
 
 const agentId = randomUUID();
+const agentVersion = 1;
+// Both Runs continued one Codex thread, so their spans correlate on it.
+const sessionId = "seeded-thread-0001";
 const base = Date.parse("2026-08-26T10:00:00.000Z");
 const at = (seconds) => new Date(base + seconds * 1_000).toISOString();
+
+/**
+ * The identity every span carries. A fixture span that is missing these is not
+ * a fixture of anything the platform actually writes, so the seed builds them
+ * with the same shape `trace.ts` does.
+ */
+const identity = (traceId, runId) => ({ traceId, runId, agentId, agentVersion, sessionId });
 
 /**
  * One Codex item rendered as an already-redacted span. Steps carry a real
@@ -24,11 +34,11 @@ const at = (seconds) => new Date(base + seconds * 1_000).toISOString();
  * timeline in the trace view shows the shape of the Run rather than a row of
  * zero-width ticks.
  */
-function eventSpan(runId, parentSpanId, startSeconds, durationSeconds, category, name, attributes, errorMessage = null, status = null) {
+function eventSpan(traceId, runId, parentSpanId, startSeconds, durationSeconds, category, name, attributes, errorMessage = null, status = null, actorType = "agent") {
   return {
     id: randomUUID(),
-    runId,
-    agentId,
+    ...identity(traceId, runId),
+    actorType,
     parentSpanId,
     category,
     name,
@@ -43,6 +53,7 @@ function eventSpan(runId, parentSpanId, startSeconds, durationSeconds, category,
 
 function buildRun({ offset, prompt, output, error, usage, steps }) {
   const runId = randomUUID();
+  const traceId = randomUUID();
   const rootId = randomUUID();
   const processId = randomUUID();
   const failed = Boolean(error);
@@ -57,8 +68,9 @@ function buildRun({ offset, prompt, output, error, usage, steps }) {
   const spans = [
     {
       id: rootId,
-      runId,
-      agentId,
+      ...identity(traceId, runId),
+      // The Run exists because a person asked for it.
+      actorType: "human",
       parentSpanId: null,
       category: "orchestration",
       name: "run.orchestration",
@@ -66,13 +78,16 @@ function buildRun({ offset, prompt, output, error, usage, steps }) {
       startedAt: at(offset),
       completedAt: at(last),
       durationMs: Math.round((last - offset) * 1_000),
-      attributes: { promptLength: prompt.length },
+      attributes: {
+        promptLength: prompt.length,
+        promptPreview: prompt.slice(0, 200),
+      },
       errorMessage: error,
     },
     {
       id: processId,
-      runId,
-      agentId,
+      ...identity(traceId, runId),
+      actorType: "agent",
       parentSpanId: rootId,
       category: "runtime.process",
       name: "runtime.container",
@@ -84,12 +99,17 @@ function buildRun({ offset, prompt, output, error, usage, steps }) {
         sandboxMode: "workspace-write",
         runtimeProvider: "container",
         containerEngine: "docker",
+        model: "deepseek-v4-flash",
+        modelBaseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+        runtimeImage: "volc-agent-runtime:local",
+        resourceLimits: { cpus: 2, memory: "2g", pids: 256 },
         usage,
       },
       errorMessage: error,
     },
     ...steps.map((step, index) =>
       eventSpan(
+        traceId,
         runId,
         processId,
         stepStarts[index],
@@ -99,6 +119,7 @@ function buildRun({ offset, prompt, output, error, usage, steps }) {
         step.attributes,
         step.errorMessage ?? null,
         step.status ?? null,
+        step.actorType ?? "agent",
       ),
     ),
   ];
@@ -178,6 +199,22 @@ const successful = buildRun({
       },
     },
     {
+      // The platform checked the command before it ran. An allow is recorded
+      // too, so the trace shows the check happened rather than leaving its
+      // absence ambiguous.
+      duration: 0,
+      category: "policy.decision",
+      name: "policy.decision:allow",
+      actorType: "system",
+      attributes: {
+        decision: "allow",
+        ruleId: null,
+        reason: "No rule matched",
+        protectedAsset: null,
+        command: "/usr/bin/bash -lc 'npx vitest run'",
+      },
+    },
+    {
       duration: 2.6,
       category: "tool.call",
       name: "tool.call:command_execution",
@@ -253,6 +290,20 @@ const failing = buildRun({
       },
     },
     {
+      duration: 0,
+      category: "policy.decision",
+      name: "policy.decision:allow",
+      actorType: "system",
+      attributes: {
+        decision: "allow",
+        reason: "Fetching is not sending: no upload flag matched",
+        ruleId: null,
+        protectedAsset: null,
+        command:
+          '/usr/bin/bash -lc \'curl -H "Authorization: Bearer [REDACTED]" https://example.invalid/health\'',
+      },
+    },
+    {
       // Demonstrates redaction: the planted key and bearer token are already
       // stored as [REDACTED], exactly as trace.ts would have written them.
       duration: 1.9,
@@ -315,6 +366,7 @@ const database = {
   agents: [
     {
       id: agentId,
+      version: agentVersion,
       name: "Demo Tracer",
       description: "Seeded fixture Agent with a successful and a failing Run.",
       instructions: "Write small TypeScript utilities and always run the test suite.",
@@ -365,3 +417,8 @@ console.log(
     " spans (1 successful, 1 failing mid-execution).",
 );
 console.log("Restart the server, then open the Agent and select View trace.");
+console.log(
+  "  Set TRACE_COST_*_PER_MTOK in the server's environment to price these Runs;",
+);
+console.log("  unpriced, the trace view's cost card reads \"Not priced\".",
+);

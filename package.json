@@ -14,11 +14,13 @@
     "dev": "concurrently -n server,web -c cyan,magenta \"npm run dev -w @launchpad/server\" \"npm run dev -w @launchpad/web\"",
     "build": "npm run build -w @launchpad/web && npm run build -w @launchpad/server",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test -w @launchpad/server",
+    "test": "npm run test --workspaces --if-present",
     "check": "npm run typecheck && npm run test && npm run build",
     "poc": "./scripts/start-local-poc.sh",
     "demo:seed": "node scripts/seed-demo.mjs",
-    "start": "npm run start -w @launchpad/server"
+    "start": "npm run start -w @launchpad/server",
+    "verify:audit": "node scripts/verify-audit.mjs",
+    "verify:evidence": "./scripts/verify-evidence.sh"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
