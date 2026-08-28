@@ -9,6 +9,7 @@ import {
   buildProcessSpan,
   buildRunSpan,
   completeSpan,
+  pruneSpans,
   redactSecrets,
 } from "./trace.js";
 import type {
@@ -41,11 +42,23 @@ export class AgentService {
     await this.store.initialize();
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
+      const restartedAt = now();
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
-          run.completedAt = now();
+          run.completedAt = restartedAt;
+        }
+      }
+      // Spans the crashed process left open would otherwise stay "running"
+      // forever, and an interrupted Run is exactly the case a trace exists to
+      // explain, so close them instead of discarding the evidence.
+      for (const span of database.spans) {
+        if (span.status === "running") {
+          span.status = "cancelled";
+          span.completedAt = restartedAt;
+          span.durationMs = Math.max(0, Date.parse(restartedAt) - Date.parse(span.startedAt));
+          span.errorMessage = "Server restarted while this run was active";
         }
       }
       for (const agent of database.agents) {
@@ -123,6 +136,7 @@ export class AgentService {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
+      database.spans = database.spans.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
   }
@@ -278,6 +292,7 @@ export class AgentService {
       promptLength: run.prompt.length,
       startedAt: runStartedAt,
     });
+    await this.appendSpans([runSpan]);
     let processSpan: TraceSpan | null = null;
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
@@ -293,6 +308,7 @@ export class AgentService {
         containerEngine:
           this.config.runtimeProvider === "container" ? this.config.containerEngine : null,
       });
+      await this.appendSpans([processSpan]);
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
@@ -304,6 +320,7 @@ export class AgentService {
         result.events ?? [],
         { runId: run.id, agentId: agentAtStart.id, parentSpanId: processSpan.id },
         secrets,
+        this.config.traceMaxEventSpansPerRun,
       );
       const completedProcessSpan = completeSpan(processSpan, "ok", completedAt, null, {
         usage: result.usage,
@@ -325,7 +342,11 @@ export class AgentService {
           content: result.output,
           createdAt: completedAt,
         });
+        // Replace the open spans written at start; completeSpan preserves ids,
+        // so appending here would duplicate them.
+        database.spans = database.spans.filter((span) => span.runId !== run.id);
         database.spans.push(completedRunSpan, completedProcessSpan, ...eventSpans);
+        database.spans = pruneSpans(database.spans, this.config.traceRetentionRuns);
         agent.status = "ready";
         agent.codexThreadId = result.threadId;
         agent.lastError = null;
@@ -343,6 +364,7 @@ export class AgentService {
             runnerError.events,
             { runId: run.id, agentId: agentAtStart.id, parentSpanId: processSpan.id },
             secrets,
+            this.config.traceMaxEventSpansPerRun,
           )
         : [];
       const spans: TraceSpan[] = [
@@ -376,9 +398,18 @@ export class AgentService {
           agent.lastError = cancelled ? null : redactedMessage;
           agent.updatedAt = completedAt;
         }
+        database.spans = database.spans.filter((span) => span.runId !== run.id);
         database.spans.push(...spans);
+        database.spans = pruneSpans(database.spans, this.config.traceRetentionRuns);
       });
     }
+  }
+
+  private async appendSpans(spans: readonly TraceSpan[]): Promise<void> {
+    if (spans.length === 0) return;
+    await this.store.mutate((database) => {
+      database.spans.push(...spans);
+    });
   }
 
   private async setStatus(id: string, status: Agent["status"]): Promise<Agent> {

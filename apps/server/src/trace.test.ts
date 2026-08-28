@@ -4,6 +4,7 @@ import {
   buildProcessSpan,
   buildRunSpan,
   completeSpan,
+  pruneSpans,
   redactAttributes,
   redactSecrets,
 } from "./trace.js";
@@ -59,7 +60,8 @@ describe("span construction", () => {
     });
     expect(span.parentSpanId).toBeNull();
     expect(span.category).toBe("orchestration");
-    expect(span.status).toBe("ok");
+    expect(span.status).toBe("running");
+    expect(span.completedAt).toBeNull();
   });
 
   it("links a process span to its parent run span", () => {
@@ -245,5 +247,69 @@ describe("buildEventSpans", () => {
     const spans = buildEventSpans(events, context, [SECRET]);
     const serialized = JSON.stringify(spans);
     expect(serialized).not.toContain(SECRET);
+  });
+});
+
+describe("event span capping", () => {
+  const context = { runId: "run-1", agentId: "agent-1", parentSpanId: "process-1" };
+  const events = (count: number): RawCodexEvent[] =>
+    Array.from({ length: count }, (_, index) => ({
+      observedAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+      event: {
+        type: "item.completed",
+        item: { id: "i" + index, type: "agent_message", text: "m" + index },
+      },
+    }));
+
+  it("keeps the most recent events and records how many were dropped", () => {
+    const spans = buildEventSpans(events(10), context, [], 4);
+    expect(spans).toHaveLength(5);
+    const notice = spans.find((span) => span.category === "trace.truncated");
+    expect(notice?.attributes.droppedEventCount).toBe(6);
+    expect(notice?.status).toBe("warning");
+    const kept = spans.filter((span) => span.category === "model.message");
+    expect(kept).toHaveLength(4);
+    expect((kept.at(-1)?.attributes.item as { text: string }).text).toBe("m9");
+  });
+
+  it("adds no notice span when the event count is within the cap", () => {
+    expect(buildEventSpans(events(3), context, [], 10)).toHaveLength(3);
+  });
+
+  it("is uncapped by default", () => {
+    expect(buildEventSpans(events(50), context, [])).toHaveLength(50);
+  });
+});
+
+describe("pruneSpans", () => {
+  const spanFor = (runId: string, startedAt: string, parentSpanId: string | null = null) => ({
+    id: runId + startedAt,
+    runId,
+    agentId: "agent-1",
+    parentSpanId,
+    category: "orchestration",
+    name: "run.orchestration",
+    status: "ok" as const,
+    startedAt,
+    completedAt: startedAt,
+    durationMs: 0,
+    attributes: {},
+    errorMessage: null,
+  });
+
+  it("returns every span while the Run count is within the limit", () => {
+    expect(pruneSpans([spanFor("a", "2026-01-01T00:00:00.000Z")], 5)).toHaveLength(1);
+  });
+
+  it("drops the oldest Runs whole rather than truncating a trace mid-tree", () => {
+    const spans = [
+      spanFor("old", "2026-01-01T00:00:00.000Z"),
+      spanFor("old", "2026-01-01T00:00:01.000Z", "p"),
+      spanFor("new", "2026-01-02T00:00:00.000Z"),
+      spanFor("new", "2026-01-02T00:00:01.000Z", "p"),
+    ];
+    const pruned = pruneSpans(spans, 1);
+    expect(pruned).toHaveLength(2);
+    expect(pruned.every((span) => span.runId === "new")).toBe(true);
   });
 });

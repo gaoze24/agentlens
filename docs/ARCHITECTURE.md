@@ -97,9 +97,11 @@ flowchart TD
     Process --> Event4["Event span: runtime.error (on failure)"]
 ```
 
-- **Root span** (`category: orchestration`) covers the whole Run, closed
+- **Root span** (`category: orchestration`) covers the whole Run. It is
+  **persisted as `running` before the Runtime is invoked** and closed
   `ok`/`error`/`cancelled` alongside the existing `AgentRun.status`
-  transition.
+  transition. Closing replaces the open record rather than appending, so a
+  span is never duplicated.
 - **Process span** (`category: runtime.process`) covers one
   `AgentRunner.run()` invocation; carries sandbox mode, runtime provider,
   and (for the container Runtime) the container engine — never the Ark key.
@@ -112,6 +114,26 @@ flowchart TD
   their span carries the actual step duration. If a runner fails, its captured
   event stream and partial usage are retained and written before the Run is
   closed, preserving the evidence needed to diagnose the failure.
+
+**Span lifecycle and crash recovery.** Because the root and process spans are
+written when they open, a Run that is still executing already has a readable
+trace, and a Run interrupted by a crash keeps one. On startup `initialize()`
+force-cancels orphaned Runs **and** closes every span still marked `running`,
+stamping `"Server restarted while this run was active"` with a computed
+duration. Without that step an interrupted Run would either carry no trace at
+all or leave spans open forever — the single failure an observability
+capability most needs to explain.
+
+**Retention.** Traces are bounded on two axes so one Agent cannot exhaust the
+JSON store, which rewrites the whole file on every mutation:
+
+| Control | Default | Behaviour |
+| --- | --- | --- |
+| `TRACE_MAX_EVENT_SPANS_PER_RUN` | 500 | Keeps the most recent events for a Run — a failing step is normally at the tail — and records the dropped count in a `trace.truncated` warning span. |
+| `TRACE_RETENTION_RUNS` | 200 | Keeps the newest N Runs and discards older ones **whole**, so a retained trace never keeps half a tree. |
+
+Deleting an Agent deletes its spans along with its Runs and messages, matching
+the existing workspace-archival policy.
 
 **Trust boundary and redaction.** `trace.ts`'s `redactSecrets` strips the
 configured Ark API key and any `Bearer <token>` pattern from every span

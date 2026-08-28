@@ -85,7 +85,7 @@ export function buildRunSpan(input: BuildRunSpanInput): TraceSpan {
     parentSpanId: null,
     category: "orchestration",
     name: "run.orchestration",
-    status: "ok",
+    status: "running",
     startedAt: input.startedAt,
     completedAt: null,
     durationMs: null,
@@ -113,7 +113,7 @@ export function buildProcessSpan(input: BuildProcessSpanInput): TraceSpan {
     category: "runtime.process",
     name:
       input.runtimeProvider === "container" ? "runtime.container" : "runtime.local-process",
-    status: "ok",
+    status: "running",
     startedAt: input.startedAt,
     completedAt: null,
     durationMs: null,
@@ -200,15 +200,49 @@ function buildEventSpan(
   };
 }
 
+/**
+ * Records that older events were dropped, so a truncated trace says so rather
+ * than silently starting in the middle.
+ */
+function truncationSpan(
+  context: { runId: string; agentId: string; parentSpanId: string },
+  droppedCount: number,
+  observedAt: string,
+): TraceSpan {
+  return {
+    id: randomUUID(),
+    runId: context.runId,
+    agentId: context.agentId,
+    parentSpanId: context.parentSpanId,
+    category: "trace.truncated",
+    name: "trace.truncated",
+    status: "warning",
+    startedAt: observedAt,
+    completedAt: observedAt,
+    durationMs: 0,
+    attributes: { droppedEventCount: droppedCount },
+    errorMessage:
+      droppedCount + " earlier events exceeded TRACE_MAX_EVENT_SPANS_PER_RUN and were dropped.",
+  };
+}
+
 export function buildEventSpans(
   events: readonly RawCodexEvent[],
   context: { runId: string; agentId: string; parentSpanId: string },
   secrets: readonly string[],
+  maxEventSpans = Number.POSITIVE_INFINITY,
 ): TraceSpan[] {
-  const spans: TraceSpan[] = [];
+  // Keep the most recent events: a failing step is normally at the tail. An
+  // item.completed whose item.started was dropped degrades to a point span.
+  const dropped = Math.max(0, events.length - maxEventSpans);
+  const kept = dropped > 0 ? events.slice(dropped) : events;
+  const spans: TraceSpan[] =
+    dropped > 0
+      ? [truncationSpan(context, dropped, events[0]?.observedAt ?? new Date().toISOString())]
+      : [];
   const pendingItems = new Map<string, RawCodexEvent>();
 
-  for (const raw of events) {
+  for (const raw of kept) {
     const type = raw.event.type;
     const itemId = itemIdForEvent(raw.event);
     if (type === "item.started" && itemId) {
@@ -243,4 +277,28 @@ export function buildEventSpans(
   }
 
   return spans.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+}
+
+/**
+ * Retention policy: keep spans for the most recent `maxRuns` Runs and discard
+ * older Runs whole, so a retained trace is never left with half its tree
+ * missing. Without this the JSON store grows without bound, and every mutation
+ * rewrites the entire file.
+ */
+export function pruneSpans(spans: readonly TraceSpan[], maxRuns: number): TraceSpan[] {
+  const latestStartByRun = new Map<string, string>();
+  for (const span of spans) {
+    const current = latestStartByRun.get(span.runId);
+    if (current === undefined || span.startedAt > current) {
+      latestStartByRun.set(span.runId, span.startedAt);
+    }
+  }
+  if (latestStartByRun.size <= maxRuns) return [...spans];
+  const retained = new Set(
+    [...latestStartByRun.entries()]
+      .sort((left, right) => right[1].localeCompare(left[1]))
+      .slice(0, maxRuns)
+      .map(([runId]) => runId),
+  );
+  return spans.filter((span) => retained.has(span.runId));
 }

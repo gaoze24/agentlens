@@ -1403,6 +1403,12 @@ textarea:focus {
   background: #f7ecd2;
 }
 
+/* A span persisted while its Run is still executing. */
+.span-status-running {
+  color: #3d4fa1;
+  background: #e0e5f8;
+}
+
 .span-error {
   margin: 4px 0 0 2px;
   color: #9e4545;
