@@ -64,6 +64,17 @@ export interface TraceSpan {
   errorMessage: string | null;
 }
 
+export interface AuditCost {
+  currency: string;
+  inputPerMillion: number;
+  cachedInputPerMillion: number;
+  outputPerMillion: number;
+  billedInputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  estimatedTotal: number;
+}
+
 export interface AuditSummary {
   durationMs: number | null;
   inputTokens: number;
@@ -77,10 +88,12 @@ export interface AuditSummary {
   warnings: number;
   errors: number;
   spanCount: number;
+  /** null when the deployment configured no token prices. */
+  cost: AuditCost | null;
 }
 
 export interface AuditBundle {
-  schemaVersion: 1;
+  schemaVersion: 2;
   exportedAt: string;
   agent: Pick<Agent, "id" | "name">;
   run: AgentRun;
