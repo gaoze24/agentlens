@@ -1,5 +1,9 @@
 # Three-day hackathon guide
 
+> Historical Starter Kit draft, preserved for provenance only. Its mandatory
+> single-track framing and submission guidance are not current competition rules.
+> See [the archive notice](README.md) and [current preparation checklist](../../submission/SUBMISSION_CHECKLIST.md).
+
 Teams receive a working Agent platform and build exactly one middleware track.
 Rebuilding the UI, control plane, local Runtime, or ECS setup is out of scope.
 

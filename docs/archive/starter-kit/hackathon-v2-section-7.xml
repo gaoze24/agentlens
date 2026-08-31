@@ -1,3 +1,4 @@
+<!-- Historical Starter Kit draft; not current submission rules. See README.md in this folder. -->
 <h3>General</h3>
 <checkbox done="false">The repository names exactly one selected track.</checkbox>
 <checkbox done="false">A reviewer can create/select an Agent and run a task from the browser.</checkbox>

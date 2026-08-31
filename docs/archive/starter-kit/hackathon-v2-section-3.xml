@@ -1,3 +1,4 @@
+<!-- Historical Starter Kit draft; not current submission rules. See README.md in this folder. -->
 <p>Declare one track in your README and opening demo slide. Features from other tracks may be mentioned as future work, but they are not required and do not earn extra points if the selected track is incomplete.</p>
 <h3>Track A — The Glass Box (Trace and Audit)</h3>
 <p><b>Mission:</b> make an Agent run understandable. A reviewer should see what happened, where it failed, and how much model usage it consumed.</p>

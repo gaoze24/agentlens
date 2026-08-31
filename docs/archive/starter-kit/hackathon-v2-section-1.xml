@@ -1,3 +1,4 @@
+<!-- Historical Starter Kit draft; not current submission rules. See README.md in this folder. -->
 <p>Autonomous coding Agents can reason, call tools, execute commands, and change files. A basic Agent can be created quickly, but operating it responsibly requires infrastructure around the model. This challenge asks you to build one focused piece of that infrastructure.</p>
 <blockquote>The Starter Kit works, but it is insecure, hard to diagnose, and only weakly isolated. Choose one middleware problem and make that layer demonstrably better.</blockquote>
 <table>

@@ -1,3 +1,4 @@
+<!-- Historical Starter Kit draft; not current submission rules. See README.md in this folder. -->
 <h3>Out of Scope</h3>
 <ul>
   <li>Rebuilding the supplied React UI, Node.js control plane, local Runtime, ECS automation, or Codex/Ark connection.</li>

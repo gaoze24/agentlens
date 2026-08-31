@@ -1,5 +1,9 @@
 # Deployment
 
+Cloud deployment is optional; use the [runbook](RUNBOOK.md) for the local
+reviewer path. These deployment instructions retain the Starter Kit's cloud
+options; no fresh cloud acceptance test is claimed by the documentation update.
+
 Use one of two Volcengine ECS paths:
 
 - Install and deploy to an existing Linux ECS instance.
@@ -85,9 +89,9 @@ dedicated ECS instance for this POC.
 ### Deploy
 
 ```bash
-git clone https://github.com/your-org/volc-agent-launchpad.git
-cd volc-agent-launchpad
-cp .env.example .env.production
+git clone https://github.com/gaoze24/agentlens.git
+cd agentlens
+if [ ! -e .env.production ]; then cp .env.example .env.production; fi
 openssl rand -hex 32
 ```
 
@@ -148,9 +152,10 @@ Requirements:
 Create configuration files:
 
 ```bash
-cp .env.example .env.production
-cp deploy/volcengine/terraform.tfvars.example \
-  deploy/volcengine/terraform.tfvars
+if [ ! -e .env.production ]; then cp .env.example .env.production; fi
+if [ ! -e deploy/volcengine/terraform.tfvars ]; then
+  cp deploy/volcengine/terraform.tfvars.example deploy/volcengine/terraform.tfvars
+fi
 ```
 
 Set `ARK_API_KEY` and `ARK_MODEL` in `.env.production`. Set the region, zone,

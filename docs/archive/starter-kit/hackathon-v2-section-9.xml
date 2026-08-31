@@ -1,3 +1,4 @@
+<!-- Historical Starter Kit draft; not current submission rules. See README.md in this folder. -->
 <p>Organizers should complete these checks before distributing the challenge:</p>
 <checkbox done="false">Publish the Starter Kit repository and pin the tested commit/tag.</checkbox>
 <checkbox done="false">Run the one-line local README path from clean macOS and Linux environments using at least two supported engines.</checkbox>
