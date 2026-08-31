@@ -5,6 +5,7 @@ import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError, RunnerExecutionError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import { evaluateEvent } from "./policy.js";
+import { migrateTraceIdentities } from "./trace-migration.js";
 import {
   LiveTraceWriter,
   buildEventSpans,
@@ -12,7 +13,9 @@ import {
   buildProcessSpan,
   buildRunSpan,
   completeSpan,
+  closeUnfinishedSpan,
   pruneSpans,
+  redactAttributes,
   redactSecrets,
 } from "./trace.js";
 import type { LiveSpanUpdate } from "./trace.js";
@@ -55,9 +58,13 @@ export class AgentService {
     await this.store.initialize();
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
+      const secrets = this.config.arkApiKey ? [this.config.arkApiKey] : [];
+      database.spans = migrateTraceIdentities(database.spans);
       const restartedAt = now();
+      const interruptedRuns = new Set<string>();
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
+          interruptedRuns.add(run.id);
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
           run.completedAt = restartedAt;
@@ -66,15 +73,26 @@ export class AgentService {
       // Spans the crashed process left open would otherwise stay "running"
       // forever, and an interrupted Run is exactly the case a trace exists to
       // explain, so close them instead of discarding the evidence.
-      for (const span of database.spans) {
-        if (span.status === "running") {
-          span.status = "cancelled";
-          span.completedAt = restartedAt;
-          span.durationMs = Math.max(0, Date.parse(restartedAt) - Date.parse(span.startedAt));
-          span.errorMessage = "Server restarted while this run was active";
-          span.attributes = { ...span.attributes, cancelledBy: "server-restart" };
+      const runsById = new Map(database.runs.map((run) => [run.id, run]));
+      database.spans = database.spans.map((span) => {
+        const run = runsById.get(span.runId);
+        // Re-sanitize old trace payloads as well as new exports. A truncated
+        // credential cannot be recognized by itself, so rebuild the preview
+        // from the original prompt before applying its length limit.
+        span.attributes = redactAttributes(span.attributes, secrets);
+        if (run && span.category === "orchestration" && "promptPreview" in span.attributes) {
+          span.attributes.promptPreview = redactSecrets(run.prompt, secrets).slice(0, PROMPT_PREVIEW_LENGTH);
         }
-      }
+        if (span.errorMessage) span.errorMessage = redactSecrets(span.errorMessage, secrets);
+        if (!run?.completedAt || (span.completedAt && span.status !== "running")) return span;
+        const restarted = interruptedRuns.has(run.id);
+        return closeUnfinishedSpan(
+          restarted ? { ...span, errorMessage: "Server restarted while this run was active" } : span,
+          run.completedAt,
+          run.status === "cancelled" ? "cancelled" : run.status === "failed" ? "error" : "warning",
+          restarted ? { cancelledBy: "server-restart" } : {},
+        );
+      });
       for (const agent of database.agents) {
         // Stores written before Agents were versioned.
         if (typeof agent.version !== "number") agent.version = 1;
@@ -321,7 +339,7 @@ export class AgentService {
     const runSpan = buildRunSpan({
       ...identity,
       promptLength: run.prompt.length,
-      promptPreview: redactSecrets(run.prompt.slice(0, PROMPT_PREVIEW_LENGTH), secrets),
+      promptPreview: redactSecrets(run.prompt, secrets).slice(0, PROMPT_PREVIEW_LENGTH),
       startedAt: runStartedAt,
     });
     await this.appendSpans([runSpan]);
@@ -397,6 +415,7 @@ export class AgentService {
         { ...identity, parentSpanId: processSpan.id },
         secrets,
         this.config.traceMaxEventSpansPerRun,
+        { completedAt, status: "warning" },
       );
       const completedProcessSpan = completeSpan(processSpan, "ok", completedAt, null, {
         usage: result.usage,
@@ -461,6 +480,7 @@ export class AgentService {
             { ...identity, parentSpanId: processSpan.id },
             secrets,
             this.config.traceMaxEventSpansPerRun,
+            { completedAt, status, attributes: closingAttributes },
           )
         : [];
       const spans: TraceSpan[] = [
