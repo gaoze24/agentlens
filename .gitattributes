@@ -1,0 +1,2 @@
+# PDF exports can contain mostly ASCII bytes but must never get CRLF conversion.
+*.pdf binary
