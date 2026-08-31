@@ -127,8 +127,11 @@ export function spanBounds(
 ): { start: number; end: number } | null {
   const start = Date.parse(span.startedAt);
   if (!Number.isFinite(start)) return null;
-  // An open span is still running, so it is drawn up to the present moment.
-  const parsedEnd = span.completedAt ? Date.parse(span.completedAt) : now;
+  // Older terminal spans can lack an end time. Only a running span may grow;
+  // unknown terminal duration is a point, not time spent until today's visit.
+  const parsedEnd = span.completedAt
+    ? Date.parse(span.completedAt)
+    : span.status === "running" ? now : start + Math.max(0, span.durationMs ?? 0);
   return { start, end: Math.max(start, Number.isFinite(parsedEnd) ? parsedEnd : start) };
 }
 

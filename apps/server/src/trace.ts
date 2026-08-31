@@ -11,6 +11,8 @@ const MAX_STRING_LENGTH = 4_096;
 const TRUNCATION_SUFFIX = "…[truncated]";
 const MODEL_METADATA_FALLBACK_PATTERN =
   /Model metadata for .+ not found\b/i;
+const SENSITIVE_KEY =
+  /^[A-Za-z0-9_.-]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)$/i;
 
 /**
  * Credential shapes worth catching even when the value is not one of the
@@ -35,16 +37,37 @@ const CREDENTIAL_PATTERNS: readonly { pattern: RegExp; replacement: string }[] =
     pattern: /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g,
     replacement: "[REDACTED PRIVATE KEY]",
   },
+  // JSON fragments embedded in prose (including escaped quotes in values).
+  {
+    pattern:
+      /(["'])([A-Za-z0-9_.-]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token))\1(\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|-?\d+(?:\.\d+)?|true|false)/gi,
+    replacement: '$1$2$1$3"[REDACTED]"',
+  },
   // Sensitive assignments: the name is kept, the value is not.
   {
     pattern:
-      /([A-Za-z0-9_.-]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token))(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+      /([A-Za-z0-9_.-]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token))(\s*[=:]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&"'{}]+)/gi,
     replacement: "$1$2[REDACTED]",
   },
 ];
 
+function truncateRedacted(value: string): string {
+  return value.length > MAX_STRING_LENGTH
+    ? value.slice(0, MAX_STRING_LENGTH) + TRUNCATION_SUFFIX
+    : value;
+}
+
 export function redactSecrets(value: string, secrets: readonly string[]): string {
   let result = value;
+  // Tool output is often JSON encoded inside a string. Parse before replacing
+  // text so escaped keys and structured credential values are handled too.
+  if (/^\s*[\[{]/.test(value)) {
+    try {
+      return truncateRedacted(JSON.stringify(redactValue(JSON.parse(value), secrets)));
+    } catch {
+      // Partial JSON and ordinary prose still get the pattern-based pass.
+    }
+  }
   for (const secret of secrets) {
     if (!secret) continue;
     result = result.split(secret).join("[REDACTED]");
@@ -52,10 +75,7 @@ export function redactSecrets(value: string, secrets: readonly string[]): string
   for (const { pattern, replacement } of CREDENTIAL_PATTERNS) {
     result = result.replace(pattern, replacement);
   }
-  if (result.length > MAX_STRING_LENGTH) {
-    result = result.slice(0, MAX_STRING_LENGTH) + TRUNCATION_SUFFIX;
-  }
-  return result;
+  return truncateRedacted(result);
 }
 
 function redactValue(value: unknown, secrets: readonly string[]): unknown {
@@ -68,7 +88,14 @@ function redactValue(value: unknown, secrets: readonly string[]): unknown {
   if (value && typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, nested] of Object.entries(value)) {
-      result[key] = redactValue(nested, secrets);
+      Object.defineProperty(result, redactSecrets(key, secrets), {
+        value: SENSITIVE_KEY.test(key) && nested !== null
+          ? "[REDACTED]"
+          : redactValue(nested, secrets),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return result;
   }
@@ -106,6 +133,22 @@ export function completeSpan(
     errorMessage,
     attributes: { ...span.attributes, ...extraAttributes },
   };
+}
+
+/** Close an interrupted step at the Run boundary, not when someone views it. */
+export function closeUnfinishedSpan(
+  span: TraceSpan,
+  completedAt: string,
+  status: SpanStatus,
+  attributes: Record<string, unknown> = {},
+): TraceSpan {
+  if (span.completedAt && span.status !== "running") return span;
+  // Clock skew must not produce negative duration or an invalid export.
+  const end = new Date(Math.max(Date.parse(span.startedAt), Date.parse(completedAt))).toISOString();
+  return completeSpan(span, status, end, span.errorMessage, {
+    completionSource: "run-end",
+    ...attributes,
+  });
 }
 
 /** Identifiers every span of a Run carries, so a span stands alone. */
@@ -306,6 +349,7 @@ export function buildEventSpans(
   context: SpanIdentity & { parentSpanId: string },
   secrets: readonly string[],
   maxEventSpans = Number.POSITIVE_INFINITY,
+  completion?: { completedAt: string; status: SpanStatus; attributes?: Record<string, unknown> },
 ): TraceSpan[] {
   // Keep the most recent events: a failing step is normally at the tail. An
   // item.completed whose item.started was dropped degrades to a point span.
@@ -355,7 +399,11 @@ export function buildEventSpans(
     });
   }
 
-  return spans.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  return spans
+    .map((span) => completion
+      ? closeUnfinishedSpan(span, completion.completedAt, completion.status, completion.attributes)
+      : span)
+    .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
 }
 
 /**

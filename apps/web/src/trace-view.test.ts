@@ -172,6 +172,22 @@ describe("timeline geometry", () => {
     const orphan = span({ id: "a", completedAt: null, durationMs: null, status: "warning" });
     expect(spanDurationMs(orphan, NOW)).toBeNull();
   });
+
+  it.each(["warning", "error", "cancelled", "ok"] as const)(
+    "does not stretch an old %s step to the time of viewing",
+    (status) => {
+      const orphan = span({ id: "old", completedAt: null, durationMs: null, status });
+      const finished = span({ id: "finished" });
+      expect(traceWindow([orphan, finished], NOW + 86_400_000)).toEqual({
+        start: Date.parse(T0), end: Date.parse(T0) + 2_000,
+      });
+    },
+  );
+
+  it("uses a recorded terminal duration when its end timestamp is missing", () => {
+    const old = span({ id: "old", completedAt: null, durationMs: 3_000, status: "warning" });
+    expect(traceWindow([old], NOW)).toEqual({ start: Date.parse(T0), end: Date.parse(T0) + 3_000 });
+  });
 });
 
 describe("formatCost", () => {

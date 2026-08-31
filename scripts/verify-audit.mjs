@@ -24,6 +24,7 @@ const SUPPORTED_SCHEMA_VERSIONS = [1, 2];
 
 const CREDENTIAL_PATTERNS = [
   [/Bearer\s+[A-Za-z0-9._~+/-]{8,}=*/i, "a bearer token"],
+  [/Basic\s+[A-Za-z0-9+/]{8,}={0,2}/i, "a basic authorization value"],
   [/\bsk-[A-Za-z0-9_-]{16,}/, "an sk- API key"],
   [/\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{16,}/, "a GitHub token"],
   [/\bgithub_pat_[A-Za-z0-9_]{20,}/, "a GitHub fine-grained token"],
@@ -31,11 +32,14 @@ const CREDENTIAL_PATTERNS = [
   [/\bAIza[A-Za-z0-9_-]{30,}/, "a Google API key"],
   [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/, "an AWS access key id"],
   [/-----BEGIN[A-Z ]*PRIVATE KEY-----/, "a private key block"],
-  [
-    /[A-Za-z0-9_.-]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\s*[=:]\s*(?!\[REDACTED\]|"\[REDACTED\]")["']?[^\s,;&"']{6,}/i,
-    "an unredacted secret assignment",
-  ],
 ];
+
+const SENSITIVE_FIELD =
+  /^[A-Za-z0-9_.-]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)$/i;
+const SECRET_ASSIGNMENT =
+  /[A-Za-z0-9_.-]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)["']?\s*[=:]\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}&"']+)/gi;
+const isRedacted = (value) =>
+  typeof value === "string" && /^\[REDACTED(?: PRIVATE KEY)?\]$/.test(value);
 
 const problems = [];
 const fail = (message) => problems.push(message);
@@ -76,15 +80,15 @@ if (!Array.isArray(bundle.spans)) fail("spans is not an array");
 
 const REQUIRED_SPAN_FIELDS = [
   "id",
-  "traceId",
   "runId",
   "agentId",
-  "agentVersion",
-  "actorType",
   "category",
   "name",
   "status",
   "startedAt",
+  // Early v1 exports predate span identities. Current v2 exports must carry
+  // them, but a previously exported v1 file cannot be migrated in place.
+  ...(bundle.schemaVersion === 2 ? ["traceId", "agentVersion", "actorType"] : []),
 ];
 for (const [index, span] of spans.entries()) {
   const where = "span " + (span?.id ?? "#" + index);
@@ -182,14 +186,41 @@ if (TERMINAL.includes(run.status)) {
 
 // --- Redaction -------------------------------------------------------------
 
-const serialized = JSON.stringify(bundle);
-for (const [pattern, description] of CREDENTIAL_PATTERNS) {
-  const match = serialized.match(pattern);
-  if (match) {
-    // Never print the match itself: this tool is run on evidence.
-    fail("the bundle appears to contain " + description + " (" + match[0].length + " chars)");
+function inspectSecrets(value) {
+  if (Array.isArray(value)) {
+    value.forEach(inspectSecrets);
+  } else if (value && typeof value === "object") {
+    for (const [key, nested] of Object.entries(value)) {
+      inspectSecrets(key);
+      if (SENSITIVE_FIELD.test(key) && nested !== null && nested !== "" && !isRedacted(nested)) {
+        fail("the bundle contains an unredacted sensitive field");
+      }
+      inspectSecrets(nested);
+    }
+  } else if (typeof value === "string") {
+    if (/^\s*[\[{]/.test(value)) {
+      try {
+        const decoded = JSON.parse(value);
+        inspectSecrets(decoded);
+        return;
+      } catch {
+        // Partial JSON still needs the text checks below.
+      }
+    }
+    // Scan decoded strings, not their JSON serialization (which hides quoted
+    // keys behind escaping). No credential values or field names are printed.
+    for (const [pattern, description] of CREDENTIAL_PATTERNS) {
+      if (pattern.test(value)) fail("the bundle appears to contain " + description);
+    }
+    for (const match of value.matchAll(SECRET_ASSIGNMENT)) {
+      const candidate = match[1].replace(/^(["'])([\s\S]*)\1$/, "$2");
+      if (candidate && candidate !== "null" && !isRedacted(candidate)) {
+        fail("the bundle contains an unredacted secret assignment");
+      }
+    }
   }
 }
+inspectSecrets(bundle);
 
 // --- Report ----------------------------------------------------------------
 

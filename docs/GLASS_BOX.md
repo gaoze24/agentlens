@@ -62,7 +62,10 @@ Two classification details do real work:
 - **`item.started` and `item.completed` for the same item id are paired into one
   span**, so a step carries its actual duration instead of appearing twice as
   zero-width points. An item that starts and never completes becomes an explicit
-  `warning` span rather than vanishing.
+  `warning` span rather than vanishing. When the Run ends, unfinished steps
+  receive its end timestamp (`completionSource: run-end`); interrupted and
+  failed Runs use `cancelled` and `error` respectively. This timestamp bounds
+  observation, not a claim that the underlying command finished successfully.
 - **Known non-fatal Runtime diagnostics are downgraded to `warning`.** The Ark
   model-metadata fallback is noisy but harmless; classifying it as an error
   would train an operator to ignore red.
@@ -144,6 +147,28 @@ prevent that now: span identity is rendered defensively (a missing field shows
 boundary that degrades to a dialog naming the failure and pointing at
 `GET /api/runs/:id/trace`. The Run is unaffected either way; only its view
 failed.
+
+### Upgrading existing traces
+
+Startup upgrades old stored spans without replacing their span IDs or parent
+links. Missing identities reuse metadata already present on the same Run;
+otherwise a trace ID is allocated once, `agentVersion` defaults to the legacy
+baseline `1`, and the unknown session remains `null`. `legacyIdentityFields`
+lists the backfilled fields, so inferred metadata is distinguishable from
+recorded metadata. The Agent's current version and thread are never substituted
+for a historical snapshot. Repeated restarts preserve the migrated identities.
+
+Old unfinished spans close at their recorded Run end, not the upgrade time.
+Stored trace attributes are re-sanitized, and prompt previews are rebuilt by
+redacting the full prompt **before** truncation. Redaction covers sensitive
+object properties and JSON-encoded tool output as well as credential patterns;
+the independent verifier checks decoded values too. This is still not a general
+data-loss-prevention system: unlabelled credentials of unknown shape cannot be
+identified reliably.
+
+New exports remain schema v2 and require the identity fields. The verifier also
+accepts pre-identity schema v1 files already exported by an older release, while
+still enforcing their tree, timing and redaction checks.
 
 ## Boundary and ownership
 

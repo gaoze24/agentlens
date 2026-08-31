@@ -47,6 +47,38 @@ describe("redactSecrets", () => {
 });
 
 describe("redactAttributes", () => {
+  it("still redacts known credentials used as JSON property names", () => {
+    const redacted = redactSecrets(JSON.stringify({ [SECRET]: "kept" }), [SECRET]);
+    expect(JSON.parse(redacted)).toEqual({ "[REDACTED]": "kept" });
+  });
+
+  it("redacts sensitive property values, including arrays and objects", () => {
+    const attributes = {
+      configuration: {
+        password: "demo-password",
+        DB_PASSWORD: 1234,
+        api_key: { current: "demo-key", old: ["demo-old"] },
+        accessToken: ["demo-token"],
+        password_hint: "kept",
+        secret: null,
+      },
+    };
+    const result = redactAttributes(attributes, []);
+    expect(result.configuration).toEqual({
+      password: "[REDACTED]", DB_PASSWORD: "[REDACTED]",
+      api_key: "[REDACTED]", accessToken: "[REDACTED]",
+      password_hint: "kept", secret: null,
+    });
+    expect(attributes.configuration.password).toBe("demo-password");
+    expect(redactAttributes(result, [])).toEqual(result);
+  });
+
+  it("preserves an own __proto__ field without changing the result prototype", () => {
+    const result = redactAttributes(JSON.parse('{"__proto__":{"password":"demo-password"}}'), []);
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+    expect(JSON.stringify(result)).toBe('{"__proto__":{"password":"[REDACTED]"}}');
+  });
+
   it("redacts secrets nested inside objects and arrays without losing structure", () => {
     const attributes = {
       command: ["run", SECRET],
@@ -332,6 +364,22 @@ describe("pruneSpans", () => {
 });
 
 describe("credential pattern redaction", () => {
+  it.each([
+    JSON.stringify({ password: 'demo-"quoted"-password', safe: "kept" }),
+    JSON.stringify({ nested: [{ api_key: { value: "demo-password" } }] }),
+    '{"pass\\u0077ord":"demo-password"}',
+    JSON.stringify({ output: JSON.stringify({ password: "demo-password" }) }),
+    JSON.stringify({ output: "DB_PASSWORD=demo-password" }),
+    'output: {"password":"demo-password", "safe":"kept"}',
+    "output: {'password':'demo-password'}",
+  ])("redacts structured credentials in %s", (input) => {
+    const redacted = redactSecrets(input, []);
+    expect(redacted).not.toContain("demo-");
+    expect(redacted).toContain("[REDACTED]");
+    expect(redactSecrets(redacted, [])).toBe(redacted);
+    if (input.startsWith("{")) expect(() => JSON.parse(redacted)).not.toThrow();
+  });
+
   const leaked: [string, string][] = [
     ["OpenAI-style key", "sk-abcdefghijklmnopqrstuvwxyz012345"],
     ["GitHub token", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"],
