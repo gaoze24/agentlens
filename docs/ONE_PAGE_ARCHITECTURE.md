@@ -1,102 +1,31 @@
-# One-page architecture: Glass Box trace and audit
+# AgentLens - one-page architecture
 
-**Selected track: A — The Glass Box (Trace and Audit).**
+Challenge: **Agent Launchpad: Design and Build Lightweight Agent Middleware**.
+Team-designed middleware: trace, audit and observability (Glass Box).
 
-Team-designed middleware for the Agent Launchpad. Data flow is numbered;
-**trust boundaries are the boxes**; the instrumentation, enforcement, and
-recovery points are tabulated below.
+![AgentLens architecture: browser, trusted control plane, runtime and model service; with explicit differences between the independent-runtime and shared-container profiles](assets/agentlens-architecture.png)
 
-```mermaid
-flowchart LR
-    subgraph browser["BROWSER (untrusted, holds no Ark key)"]
-        UI["React Playground<br/>span tree, filters, run history,<br/>audit export"]
-    end
+- [One-page PDF for submission](../output/pdf/agentlens-architecture.pdf)
+- [Vector SVG](assets/agentlens-architecture.svg)
+- [PNG for the submission gallery](assets/agentlens-architecture.png)
+- [Reproduction and shutdown instructions](RUNBOOK.md)
 
-    subgraph plane["CONTROL PLANE (trusted, holds the Ark key, owns the trace)"]
-        direction TB
-        Auth{{"Bearer auth hook<br/>guards every /api/* route"}}
-        Svc["AgentService.executeRun<br/>opens and closes spans"]
-        Trace["trace.ts<br/>classify, pair, redact, cap"]
-        Audit["audit.ts<br/>summarize, redact again"]
-        Store[("JSON store<br/>agents, runs, spans")]
-        Auth --> Svc
-        Svc --> Trace
-        Trace -->|"6 redacted spans only"| Store
-        Store -->|"7 read trace"| Auth
-        Store --> Audit
-    end
+## Read the numbered flow
 
-    subgraph rt["AGENT RUNTIME (runs model-authored code, assume hostile)"]
-        direction TB
-        Codex["Codex CLI<br/>--json event stream"]
-        WS[("Per-Agent<br/>workspace")]
-        Codex -->|"3 files, commands"| WS
-    end
+1. **API boundary:** the browser sends a task; Fastify validates it and applies shared-token authentication when configured. Health/auth-discovery endpoints are public. This is not user identity or per-user authorization.
+2. **Control-plane ownership:** `AgentService.executeRun` persists the root before invoking a runner. It owns lifecycle transitions, live-write ordering and final trace persistence. Observed command policy records allow/deny decisions and requests runner cancellation on denial.
+3. **Execution:** Codex calls the configured Ark Responses-compatible endpoint and performs workspace actions. Its event stream crosses back into the control plane as untrusted runtime output.
+4. **Instrumentation and storage:** `trace.ts` pairs events, attaches identifiers, sanitizes payloads, and bounds history. `audit.ts` summarizes the trace and reported usage. The JSON store also contains ordinary conversation records; those records and workspace files are not all sanitized by the trace redactor.
+5. **Evidence:** the UI reads stored trace/audit records, renders the timeline and comparisons, and exports versioned JSON. Export re-applies redaction. The independent verifier checks the artifact rather than relying on UI appearance.
 
-    Ark["BytePlus ModelArk<br/>Responses API"]
+## Trust and failure boundaries
 
-    UI -->|"1 send message"| Auth
-    UI -->|"7 read trace, export audit"| Auth
-    Svc ==>|"2 spawn, key by env only"| Codex
-    Codex -.->|"5 events, streamed as observed and on return or the thrown error"| Svc
-    Codex -->|"4 model call"| Ark
+- **Local POC (`npm run poc`):** the API runs on the host and creates a disposable runtime container per turn. The runtime mounts the Agent workspace and Codex state, with configured UID/resource limits and reduced privileges. This is still ordinary container isolation, not a hardened multi-tenant security guarantee.
+- **Windows Compose:** the API and Codex processes share one application container. `RUNTIME_PROVIDER=local-process` refers to a process inside that container. Do not draw or claim a separate per-Agent container boundary for this deployment.
+- **Provider credentials:** supplied to the backend/runtime environment, not the browser configuration. The runtime can access its environment; redaction is not a guarantee against deliberate exfiltration or every unknown secret shape.
+- **Interruption and upgrade:** startup reconciles active Runs; unfinished terminal spans are closed at the recorded Run end. Missing historical identities are backfilled once and explicitly labelled, without substituting the Agent's current version/session.
+- **Policy limitation:** event-driven command matching detects then attempts to terminate; it does not authorize a command before execution. Process cancellation in Compose is not a universal descendant-process cleanup guarantee.
 
-    classDef trusted fill:#e8f0fe,stroke:#3d4fa1,stroke-width:2px
-    classDef hostile fill:#fdeaea,stroke:#ac4343,stroke-width:2px,stroke-dasharray:5 3
-    classDef outside fill:#f4f4f5,stroke:#8a8a8f,stroke-width:1px
-    class plane trusted
-    class rt hostile
-    class browser,Ark outside
-```
+The diagram is generated by `scripts/render-architecture.py` using ReportLab and pypdfium2 (documentation-only dependencies, not required to run the app). The generated PDF is a single landscape page.
 
-## Instrumentation, enforcement, and recovery points
-
-| # | Point | Owner | What crosses | On failure |
-| --- | --- | --- | --- | --- |
-| 1 | **Auth enforcement** | `app.ts` `onRequest` hook | Bearer token, constant-time compared | 401 before any handler runs, including both trace routes. |
-| 2 | **Root and process spans opened** | `AgentService.executeRun` | Spans persisted as `running` *before* the Runtime is invoked | A Run in flight is already observable, and a crashed Run keeps its evidence. |
-| 3 | Workspace side effects | Codex, inside the Runtime | File writes, command execution | Contained to the per-Agent workspace bind mount. |
-| 4 | **Secret containment** | `childEnvironment()` in both runners | `ARK_API_KEY` as an environment variable | The key is never an argv, a request body, or a span attribute. |
-| 5 | **Instrumentation seam** | `RunnerRequest.onEvent`, then `RunnerResult.events` / `RunnerExecutionError.events` | Raw Codex JSON events, streamed as observed and again as a whole list | A failed *or cancelled* run still carries its events, because `RunCancelledError extends RunnerExecutionError`. |
-| 5b | **Live span writes** | `LiveTraceWriter` + a serialised write queue | Open spans while the Run executes, closed in place on completion | Live writes are drained before the terminal rewrite, and a failed live write never fails the Run it describes. |
-| 6 | **Redaction, classification, retention** | `trace.ts` | Only redacted, capped spans reach disk | Secrets replaced and payloads truncated *before* persistence; `item.started`/`item.completed` paired into one span with a real duration. |
-| 7 | **Read and export path** | `GET /api/runs/:id/trace`, `GET /api/runs/:id/audit` | Redacted spans; versioned evidence bundle, priced at the configured rates | Export re-applies redaction at serialization time as defence in depth; the browser re-reads this route until the Run is terminal. |
-| — | **Crash recovery** | `AgentService.initialize()` | — | On restart, orphaned Runs are cancelled **and** every span still `running` is closed with a computed duration and a restart reason. |
-| — | **Deletion policy** | `AgentService.deleteAgent()` | — | Spans are removed with the Agent's runs and messages, matching workspace archival. |
-
-## Trust boundaries
-
-- **Browser to control plane.** The browser holds no provider credential. Every
-  `/api/*` call, including trace reads and audit export, passes the bearer hook
-  first.
-- **Control plane to Agent Runtime.** The sharpest boundary. Codex executes
-  model-authored code, so the Runtime is treated as hostile: non-root, dropped
-  capabilities, `no-new-privileges`, CPU/memory/PID caps, and a workspace bind
-  mount. The Ark key enters as an environment variable and never comes back
-  out; events cross this boundary as plain stdout JSON.
-- **Redaction sits inside the boundary, before storage.** Spans are redacted
-  where they are constructed, not on the way out, so a secret is never written
-  to disk in the first place. The export path redacts a second time because a
-  bundle is meant to leave the machine.
-
-## Span model
-
-One Run produces one tree. The root opens before the Runtime is invoked and
-closes in the same transaction that transitions `AgentRun.status`.
-
-```
-run.orchestration        orchestration    running -> ok | error | cancelled
-`- runtime.container     runtime.process  sandbox mode, engine, token usage
-   |- model.reasoning    one Codex item
-   |- policy.decision    what the platform allowed or denied, actorType system
-   |- tool.call          item.started paired with item.completed,
-   |- tool.call          carrying the real step duration
-   |- runtime.warning    known non-fatal diagnostic, or an item that never completed
-   `- runtime.error      the failing step
-```
-
-Event spans are written twice: live and open while the Run executes, then
-replaced by the authoritative set when it ends.
-
-Problem statement, demo script, evidence map, and limitations:
-[GLASS_BOX.md](GLASS_BOX.md).
+Design detail and regression evidence: [GLASS_BOX.md](GLASS_BOX.md). Baseline attribution: [RrankPyramid/CodeJam](https://github.com/RrankPyramid/CodeJam).

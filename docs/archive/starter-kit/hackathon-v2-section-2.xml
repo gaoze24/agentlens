@@ -1,3 +1,4 @@
+<!-- Historical Starter Kit draft; not current submission rules. See README.md in this folder. -->
 <p>The organizers distribute the Starter Kit before Day 1. With Node.js plus Docker, Colima, or Podman installed, teams provide the prepared Ark Key and endpoint ID and start the complete local Playground with one command. No team needs ECS, AK/SK, VPC, TOS, or Terraform for normal development.</p>
 <table>
   <colgroup><col width="130"/><col width="250"/><col width="230"/></colgroup>

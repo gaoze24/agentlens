@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<svg width="842" height="595" preserveAspectRatio="xMinYMin meet" viewBox="0 0 842 595" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="842" height="595"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-595)" style="clip-path: url(#clip)">
+		<g transform="">
+			<rect x="0" y="0" width="842" height="595" style="stroke: none; stroke-linecap: butt; stroke-width: 0.75; fill: rgb(98%,98%,96%); fill-rule: evenodd;"/>
+			<text x="36" y="555" style="font-family: Helvetica-Bold; font-size: 26px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,1110) scale(1,-1)">AgentLens</text>
+			<text x="621.377" y="558" style="font-family: Helvetica; font-size: 8.5px;fill: rgb(20%,41%,31%); stroke:none;" transform="translate(0,1116) scale(1,-1)">TIKTOK TECHJAM 2026 / AGENT LAUNCHPAD</text>
+			<text x="36" y="534" style="font-family: Helvetica; font-size: 13px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,1068) scale(1,-1)">From agent execution to inspectable evidence</text>
+			<text x="36" y="512" style="font-family: Helvetica; font-size: 9px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,1024) scale(1,-1)">Middleware focus: trace, audit and observability. Existing platform and runtime retained.</text>
+			<rect x="36" y="215" width="150" height="278" rx="6" ry="6" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<text x="48" y="477" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,954) scale(1,-1)">BROWSER</text>
+			<text x="48" y="463" style="font-family: Helvetica; font-size: 8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,926) scale(1,-1)">Untrusted client</text>
+			<rect x="48" y="398" width="126" height="49" rx="6" ry="6" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(98%,98%,96%); fill-rule: evenodd;"/>
+			<text x="60" y="429" style="font-family: Helvetica-Bold; font-size: 9px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,858) scale(1,-1)">Operator + Playground</text>
+			<text x="60" y="414" style="font-family: Helvetica; font-size: 8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,828) scale(1,-1)">Create / send / stop / start</text>
+			<rect x="48" y="280" width="126" height="93" rx="6" ry="6" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(98%,98%,96%); fill-rule: evenodd;"/>
+			<text x="60" y="355" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,710) scale(1,-1)">Evidence UI</text>
+			<text x="60" y="339" style="font-family: Helvetica; font-size: 8.5px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,678) scale(1,-1)">Live trace + timeline</text>
+			<text x="60" y="326" style="font-family: Helvetica; font-size: 8.5px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,652) scale(1,-1)">Run filters + comparison</text>
+			<text x="60" y="313" style="font-family: Helvetica; font-size: 8.5px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,626) scale(1,-1)">Usage / estimated cost</text>
+			<text x="60" y="300" style="font-family: Helvetica; font-size: 8.5px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,600) scale(1,-1)">Export audit JSON</text>
+			<text x="48" y="253" style="font-family: Helvetica; font-size: 7.6px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,506) scale(1,-1)">No provider key in UI config.</text>
+			<text x="48" y="242" style="font-family: Helvetica; font-size: 7.6px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,484) scale(1,-1)">Shared access token when</text>
+			<text x="48" y="231" style="font-family: Helvetica; font-size: 7.6px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,462) scale(1,-1)">configured; not user identity.</text>
+			<rect x="226" y="215" width="330" height="278" rx="6" ry="6" style="stroke: rgb(60%,71%,63%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(92%,95%,92%); fill-rule: evenodd;"/>
+			<text x="240" y="477" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(20%,41%,31%); stroke:none;" transform="translate(0,954) scale(1,-1)">CONTROL PLANE</text>
+			<text x="240" y="463" style="font-family: Helvetica; font-size: 8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,926) scale(1,-1)">Fastify / trusted owner of Run state and trace</text>
+			<rect x="240" y="415" width="302" height="36" rx="6" ry="6" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<text x="252" y="436" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,872) scale(1,-1)">1  API boundary</text>
+			<text x="252" y="423" style="font-family: Helvetica; font-size: 8px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,846) scale(1,-1)">Validation + shared-token gate when configured</text>
+			<rect x="240" y="336" width="302" height="59" rx="6" ry="6" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<text x="252" y="377" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,754) scale(1,-1)">2  AgentService + runner adapter</text>
+			<text x="252" y="361" style="font-family: Helvetica; font-size: 7.8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,722) scale(1,-1)">Persist root first; queue live writes; finalize Run + trace.</text>
+			<text x="252" y="349" style="font-family: Helvetica; font-size: 7.8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,698) scale(1,-1)">Observed command policy records allow/deny and requests cancellation.</text>
+			<rect x="240" y="245" width="145" height="70" rx="6" ry="6" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<text x="252" y="297" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,594) scale(1,-1)">4  Trace pipeline</text>
+			<text x="252" y="280" style="font-family: Helvetica; font-size: 8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,560) scale(1,-1)">Pair events + attach identity</text>
+			<text x="252" y="268" style="font-family: Helvetica; font-size: 8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,536) scale(1,-1)">Redact payloads + cap history</text>
+			<text x="252" y="256" style="font-family: Helvetica; font-size: 8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,512) scale(1,-1)">Close unfinished steps</text>
+			<rect x="397" y="245" width="145" height="70" rx="6" ry="6" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<text x="409" y="297" style="font-family: Helvetica-Bold; font-size: 9.5px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,594) scale(1,-1)">Persist + summarize</text>
+			<text x="409" y="280" style="font-family: Helvetica; font-size: 7.8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,560) scale(1,-1)">JSON store / audit.ts</text>
+			<text x="409" y="268" style="font-family: Helvetica; font-size: 7.8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,536) scale(1,-1)">Redacted trace records</text>
+			<text x="409" y="256" style="font-family: Helvetica; font-size: 7.8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,512) scale(1,-1)">Raw chat records also present*</text>
+			<text x="240" y="229" style="font-family: Helvetica; font-size: 8px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,458) scale(1,-1)">5  Authenticated trace/audit routes; export re-applies redaction</text>
+			<rect x="588" y="329" width="218" height="164" rx="6" ry="6" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(96%,94%,90%); fill-rule: evenodd;"/>
+			<text x="602" y="477" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,954) scale(1,-1)">AGENT RUNTIME</text>
+			<text x="602" y="463" style="font-family: Helvetica; font-size: 7.8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,926) scale(1,-1)">Model-authored execution; treat as untrusted</text>
+			<rect x="602" y="390" width="190" height="57" rx="6" ry="6" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<text x="614" y="428" style="font-family: Helvetica-Bold; font-size: 11px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,856) scale(1,-1)">3  Codex CLI</text>
+			<text x="614" y="411" style="font-family: Helvetica; font-size: 8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,822) scale(1,-1)">Model calls, commands and file edits</text>
+			<text x="614" y="399" style="font-family: Helvetica; font-size: 8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,798) scale(1,-1)">Observed JSON events on stdout</text>
+			<rect x="602" y="341" width="190" height="33" rx="6" ry="6" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<text x="614" y="361" style="font-family: Helvetica-Bold; font-size: 8.6px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,722) scale(1,-1)">Workspace + persistent session</text>
+			<text x="614" y="349" style="font-family: Helvetica; font-size: 7.5px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,698) scale(1,-1)">Mount / process access depends on profile</text>
+			<rect x="588" y="215" width="218" height="76" rx="6" ry="6" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<text x="602" y="271" style="font-family: Helvetica-Bold; font-size: 9px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,542) scale(1,-1)">EXTERNAL MODEL SERVICE</text>
+			<text x="602" y="253" style="font-family: Helvetica; font-size: 7.8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,506) scale(1,-1)">Ark Responses-compatible endpoint</text>
+			<text x="602" y="241" style="font-family: Helvetica; font-size: 7.8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,482) scale(1,-1)">Operator-supplied model / endpoint</text>
+			<text x="602" y="229" style="font-family: Helvetica; font-size: 7.8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,458) scale(1,-1)">Provider key supplied via runtime environment</text>
+			<polyline points="174 432, 240 432" style="stroke: rgb(20%,41%,31%); stroke-linecap: butt; stroke-width: 1.15; fill: None; fill-rule: evenodd;"/>
+			<polygon points="240 432, 235 429.8, 235 434.2" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(20%,41%,31%); fill-rule: evenodd;"/>
+			<text x="193.3275" y="444" style="font-family: Helvetica; font-size: 7px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,888) scale(1,-1)">request</text>
+			<polyline points="391 415, 391 395" style="stroke: rgb(20%,41%,31%); stroke-linecap: butt; stroke-width: 1.15; fill: None; fill-rule: evenodd;"/>
+			<polygon points="391 395, 388.8 400, 393.2 400" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(20%,41%,31%); fill-rule: evenodd;"/>
+			<polyline points="542 379, 571 379, 571 433, 602 433" style="stroke: rgb(20%,41%,31%); stroke-linecap: butt; stroke-width: 1.15; fill: None; fill-rule: evenodd;"/>
+			<polygon points="602 433, 597 430.8, 597 435.2" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(20%,41%,31%); fill-rule: evenodd;"/>
+			<text x="567.9425" y="441" style="font-family: Helvetica; font-size: 7px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,882) scale(1,-1)">run</text>
+			<polyline points="602 399, 579 399, 579 349, 542 349" style="stroke: rgb(20%,41%,31%); stroke-linecap: butt; stroke-width: 1.15; fill: None; fill-rule: evenodd; stroke-dasharray: 3, 2;"/>
+			<polygon points="542 349, 547 351.2, 547 346.8" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(20%,41%,31%); fill-rule: evenodd;"/>
+			<text x="566.689" y="335" style="font-family: Helvetica; font-size: 7px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,670) scale(1,-1)">events</text>
+			<polyline points="312 336, 312 315" style="stroke: rgb(20%,41%,31%); stroke-linecap: butt; stroke-width: 1.15; fill: None; fill-rule: evenodd;"/>
+			<polygon points="312 315, 309.8 320, 314.2 320" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(20%,41%,31%); fill-rule: evenodd;"/>
+			<polyline points="385 273, 397 273" style="stroke: rgb(20%,41%,31%); stroke-linecap: butt; stroke-width: 1.15; fill: None; fill-rule: evenodd;"/>
+			<polygon points="397 273, 392 270.8, 392 275.2" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(20%,41%,31%); fill-rule: evenodd;"/>
+			<polyline points="470 245, 470 239" style="stroke: rgb(20%,41%,31%); stroke-linecap: butt; stroke-width: 1.15; fill: None; fill-rule: evenodd;"/>
+			<polygon points="470 239, 467.8 244, 472.2 244" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(20%,41%,31%); fill-rule: evenodd;"/>
+			<polyline points="226 234, 203 234, 203 306, 174 306" style="stroke: rgb(20%,41%,31%); stroke-linecap: butt; stroke-width: 1.15; fill: None; fill-rule: evenodd;"/>
+			<polygon points="174 306, 179 308.2, 179 303.8" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(20%,41%,31%); fill-rule: evenodd;"/>
+			<text x="198.9965" y="320" style="font-family: Helvetica; font-size: 7px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,640) scale(1,-1)">read</text>
+			<polyline points="697 390, 697 374" style="stroke: rgb(20%,41%,31%); stroke-linecap: butt; stroke-width: 1.15; fill: None; fill-rule: evenodd;"/>
+			<polygon points="697 374, 694.8 379, 699.2 379" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(20%,41%,31%); fill-rule: evenodd;"/>
+			<polyline points="792 390, 815 390, 815 306, 697 306, 697 291" style="stroke: rgb(20%,41%,31%); stroke-linecap: butt; stroke-width: 1.15; fill: None; fill-rule: evenodd;"/>
+			<polygon points="697 291, 694.8 296, 699.2 296" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(20%,41%,31%); fill-rule: evenodd;"/>
+			<text x="721" y="313" style="font-family: Helvetica; font-size: 8px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,626) scale(1,-1)">Responses API</text>
+			<path d="M 36,195 L 806,195 Z" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75;"/>
+			<text x="36" y="177" style="font-family: Helvetica-Bold; font-size: 8.5px;fill: rgb(20%,41%,31%); stroke:none;" transform="translate(0,354) scale(1,-1)">RUNTIME PROFILES / DO NOT CONFUSE LOGICAL AND PHYSICAL BOUNDARIES</text>
+			<text x="36" y="154" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,308) scale(1,-1)">Local POC - independent Runtime</text>
+			<text x="36" y="138" style="font-family: Helvetica; font-size: 8.1px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,276) scale(1,-1)">Host API launches one disposable container per turn. Workspace bind mount,</text>
+			<text x="36" y="126" style="font-family: Helvetica; font-size: 8.1px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,252) scale(1,-1)">configured UID, dropped capabilities, and CPU / memory / PID limits.</text>
+			<text x="36" y="114" style="font-family: Helvetica; font-size: 8.1px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,228) scale(1,-1)">Landlock is probed; any fallback is inside that container, not on the host.</text>
+			<text x="432" y="154" style="font-family: Helvetica-Bold; font-size: 10px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,308) scale(1,-1)">Windows Compose - shared application container</text>
+			<text x="432" y="138" style="font-family: Helvetica; font-size: 8.1px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,276) scale(1,-1)">API and Codex processes share one container; runtime=local-process.</text>
+			<text x="432" y="126" style="font-family: Helvetica; font-size: 8.1px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,252) scale(1,-1)">No independent per-Agent container boundary. Shared state and credentials</text>
+			<text x="432" y="114" style="font-family: Helvetica; font-size: 8.1px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,228) scale(1,-1)">must not be treated as protected from a hostile Agent in this profile.</text>
+			<path d="M 36,87 L 806,87 Z" style="stroke: rgb(76%,80%,76%); stroke-linecap: butt; stroke-width: 0.75;"/>
+			<text x="36" y="72" style="font-family: Helvetica-Bold; font-size: 8.5px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,144) scale(1,-1)">Recovery</text>
+			<text x="84" y="72" style="font-family: Helvetica; font-size: 8px;fill: rgb(12%,16%,12%); stroke:none;" transform="translate(0,144) scale(1,-1)">Restart reconciles active Runs; terminal steps close; legacy identity backfills record provenance.</text>
+			<text x="36" y="57" style="font-family: Helvetica; font-size: 7.8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,114) scale(1,-1)">* Redaction applies to trace/audit payloads, not every stored chat or workspace file. Unknown secrets can escape detection.</text>
+			<text x="36" y="43" style="font-family: Helvetica; font-size: 7.8px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,86) scale(1,-1)">Single-user POC. Policy is observational, not pre-execution approval. Health and auth-discovery routes remain public.</text>
+			<text x="36" y="27" style="font-family: Helvetica; font-size: 7px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,54) scale(1,-1)">Source: gaoze24/agentlens + reviewed audit fixes (4aa5e7b). Baseline: RrankPyramid/CodeJam.</text>
+			<text x="728.566" y="27" style="font-family: Helvetica; font-size: 7px;fill: rgb(33%,37%,34%); stroke:none;" transform="translate(0,54) scale(1,-1)">31 AUG 2026  /  1 PAGE</text>
+		</g>
+	</g>
+</svg>
